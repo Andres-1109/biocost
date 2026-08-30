@@ -12,6 +12,7 @@ import { FarmsModule } from './farms/farms.module';
 import { InsumosModule } from './insumos/insumos.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ReportsModule } from './reports/reports.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { UsersModule } from './users/users.module';
 
@@ -35,6 +36,7 @@ import { UsersModule } from './users/users.module';
     DashboardModule,
     InsumosModule,
     InventoryModule,
+    ReportsModule,
     TransactionsModule,
     UsersModule,
     AuthModule,
