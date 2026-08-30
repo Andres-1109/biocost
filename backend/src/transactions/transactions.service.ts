@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { InsumosService } from '../insumos/insumos.service';
 import { CreateEgresoDto } from './dto/create-egreso.dto';
+import { CreateIngresoDto } from './dto/create-ingreso.dto';
 import { categoriaRequiresInsumo, CATEGORIES_REQUIRING_INSUMO } from './transaction-categories.constants';
 
 @Injectable()
@@ -32,6 +33,28 @@ export class TransactionsService {
         descripcion: dto.descripcion,
         facturaUrl: dto.facturaUrl,
         insumoId,
+        createdByMembershipId: currentUser.membershipId,
+        createdById: currentUser.userId,
+      },
+    });
+  }
+
+  // HU-15: registrar un ingreso. Mismo patrón de validación de ciclo que
+  // el egreso; los ingresos nunca referencian un insumo.
+  async createIngreso(currentUser: RequestUser, dto: CreateIngresoDto): Promise<Transaction> {
+    await this.assertCycleOwnedAndActive(currentUser.companyId, dto.cycleId);
+
+    return this.prisma.transaction.create({
+      data: {
+        cycleId: dto.cycleId,
+        tipo: TransaccionTipo.INGRESO,
+        categoria: dto.categoria,
+        monto: dto.monto,
+        fecha: new Date(dto.fecha),
+        cantidad: dto.cantidad,
+        unidadMedida: dto.unidadMedida,
+        descripcion: dto.descripcion,
+        facturaUrl: dto.facturaUrl,
         createdByMembershipId: currentUser.membershipId,
         createdById: currentUser.userId,
       },
