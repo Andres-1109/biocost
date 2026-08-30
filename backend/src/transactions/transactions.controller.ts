@@ -2,11 +2,13 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -17,6 +19,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateEgresoDto } from './dto/create-egreso.dto';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
+import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { TransactionsService } from './transactions.service';
 
@@ -53,5 +56,15 @@ export class TransactionsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@CurrentUser() currentUser: RequestUser, @Param('id') id: string) {
     return this.transactionsService.remove(currentUser, id);
+  }
+
+  // HU-18: historial con filtros. Sin @Roles() — el scoping (propio vs.
+  // consolidado) lo resuelve el service según rol y puedeVerDashboard.
+  @Get()
+  findAll(
+    @CurrentUser() currentUser: RequestUser,
+    @Query() query: ListTransactionsQueryDto,
+  ) {
+    return this.transactionsService.findAll(currentUser, query);
   }
 }

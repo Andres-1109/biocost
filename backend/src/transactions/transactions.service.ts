@@ -3,6 +3,8 @@ import {
   AuditAction,
   AuditEntidad,
   CicloEstado,
+  Prisma,
+  Role,
   Transaction,
   TransaccionTipo,
 } from '@prisma/client';
@@ -12,6 +14,7 @@ import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
 import { CreateEgresoDto } from './dto/create-egreso.dto';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
+import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import {
   CATEGORIES_REQUIRING_INSUMO,
@@ -145,6 +148,62 @@ export class TransactionsService {
       entidadId: transactionId,
       valoresAntes: this.toAuditSnapshot(existing),
     });
+  }
+
+  // HU-18: historial con filtros combinables + paginación. Un Operador sin
+  // permiso de dashboard (HU-08) solo ve su propio historial — se
+  // re-consulta el Membership en cada request (no se confía en un flag
+  // del access token, que puede quedar desactualizado hasta 15 min si el
+  // admin le acaba de quitar/dar el permiso).
+  async findAll(currentUser: RequestUser, query: ListTransactionsQueryDto) {
+    const where: Prisma.TransactionWhereInput = {
+      cycle: { farm: { companyId: currentUser.companyId } },
+      ...(query.cycleId ? { cycleId: query.cycleId } : {}),
+      ...(query.categoria ? { categoria: query.categoria } : {}),
+      ...(query.tipo ? { tipo: query.tipo } : {}),
+      ...(query.dateFrom || query.dateTo
+        ? {
+            fecha: {
+              ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
+              ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    if (currentUser.role === Role.OPERADOR) {
+      const membership = await this.prisma.membership.findUnique({
+        where: { id: currentUser.membershipId },
+        select: { puedeVerDashboard: true },
+      });
+      if (!membership?.puedeVerDashboard) {
+        where.createdByMembershipId = currentUser.membershipId;
+      }
+    }
+
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+
+    const [data, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { fecha: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: { createdByMembership: { include: { user: { select: { name: true } } } } },
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: data.map((tx) => ({
+        ...tx,
+        registradoPor: tx.createdByMembership.user.name,
+      })),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   private async resolveInsumoId(

@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { InsumoCategoriaPadre, Role, TransaccionCategoria } from '@prisma/client';
+import { InsumoCategoriaPadre, Role, TransaccionCategoria, TransaccionTipo } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -345,5 +345,142 @@ describe('TransactionsService.update / remove (HU-17)', () => {
       where: { id: 'tx-1' },
       data: expect.objectContaining({ insumoId: 'insumo-1' }),
     });
+  });
+});
+
+describe('TransactionsService.findAll (HU-18)', () => {
+  let prismaMock: {
+    transaction: { findMany: jest.Mock; count: jest.Mock };
+    membership: { findUnique: jest.Mock };
+  };
+  let transactionsService: TransactionsService;
+
+  const txRow = {
+    id: 'tx-1',
+    createdByMembership: { user: { name: 'Operador Demo' } },
+  };
+
+  beforeEach(() => {
+    prismaMock = {
+      transaction: {
+        findMany: jest.fn().mockResolvedValue([txRow]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      membership: { findUnique: jest.fn() },
+    };
+    transactionsService = new TransactionsService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as InsumosService,
+      buildAuditServiceMock(),
+    );
+  });
+
+  it('un Admin ve el consolidado de la empresa (sin filtrar por membership)', async () => {
+    const admin: RequestUser = {
+      userId: 'user-admin',
+      membershipId: 'membership-admin',
+      companyId: 'company-1',
+      role: Role.ADMIN,
+    };
+
+    await transactionsService.findAll(admin, { page: 1, pageSize: 20 });
+
+    const callArgs = prismaMock.transaction.findMany.mock.calls[0][0];
+    expect(callArgs.where.createdByMembershipId).toBeUndefined();
+    expect(prismaMock.membership.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('un Operador SIN puedeVerDashboard solo ve su propio historial', async () => {
+    prismaMock.membership.findUnique.mockResolvedValue({ puedeVerDashboard: false });
+    const operador: RequestUser = {
+      userId: 'user-op',
+      membershipId: 'membership-op',
+      companyId: 'company-1',
+      role: Role.OPERADOR,
+    };
+
+    await transactionsService.findAll(operador, { page: 1, pageSize: 20 });
+
+    const callArgs = prismaMock.transaction.findMany.mock.calls[0][0];
+    expect(callArgs.where.createdByMembershipId).toBe('membership-op');
+  });
+
+  it('un Operador CON puedeVerDashboard ve el consolidado', async () => {
+    prismaMock.membership.findUnique.mockResolvedValue({ puedeVerDashboard: true });
+    const operador: RequestUser = {
+      userId: 'user-op',
+      membershipId: 'membership-op',
+      companyId: 'company-1',
+      role: Role.OPERADOR,
+    };
+
+    await transactionsService.findAll(operador, { page: 1, pageSize: 20 });
+
+    const callArgs = prismaMock.transaction.findMany.mock.calls[0][0];
+    expect(callArgs.where.createdByMembershipId).toBeUndefined();
+  });
+
+  it('re-consulta el Membership en cada request (no confía en el JWT)', async () => {
+    prismaMock.membership.findUnique.mockResolvedValue({ puedeVerDashboard: false });
+    const operador: RequestUser = {
+      userId: 'user-op',
+      membershipId: 'membership-op',
+      companyId: 'company-1',
+      role: Role.OPERADOR,
+    };
+
+    await transactionsService.findAll(operador, { page: 1, pageSize: 20 });
+
+    expect(prismaMock.membership.findUnique).toHaveBeenCalledWith({
+      where: { id: 'membership-op' },
+      select: { puedeVerDashboard: true },
+    });
+  });
+
+  it('aplica filtros combinados (ciclo, categoría, tipo, rango de fechas)', async () => {
+    const admin: RequestUser = {
+      userId: 'user-admin',
+      membershipId: 'membership-admin',
+      companyId: 'company-1',
+      role: Role.ADMIN,
+    };
+
+    await transactionsService.findAll(admin, {
+      cycleId: 'cycle-1',
+      categoria: TransaccionCategoria.VENTA_PESCADO,
+      tipo: TransaccionTipo.INGRESO,
+      dateFrom: '2026-01-01',
+      dateTo: '2026-12-31',
+      page: 1,
+      pageSize: 20,
+    });
+
+    const callArgs = prismaMock.transaction.findMany.mock.calls[0][0];
+    expect(callArgs.where).toEqual(
+      expect.objectContaining({
+        cycleId: 'cycle-1',
+        categoria: TransaccionCategoria.VENTA_PESCADO,
+        tipo: TransaccionTipo.INGRESO,
+        fecha: { gte: new Date('2026-01-01'), lte: new Date('2026-12-31') },
+      }),
+    );
+  });
+
+  it('pagina correctamente (skip/take) y devuelve total', async () => {
+    const admin: RequestUser = {
+      userId: 'user-admin',
+      membershipId: 'membership-admin',
+      companyId: 'company-1',
+      role: Role.ADMIN,
+    };
+
+    const result = await transactionsService.findAll(admin, { page: 2, pageSize: 10 });
+
+    const callArgs = prismaMock.transaction.findMany.mock.calls[0][0];
+    expect(callArgs.skip).toBe(10);
+    expect(callArgs.take).toBe(10);
+    expect(result.total).toBe(1);
+    expect(result.page).toBe(2);
+    expect(result.data[0].registradoPor).toBe('Operador Demo');
   });
 });
