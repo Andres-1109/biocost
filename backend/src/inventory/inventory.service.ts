@@ -1,6 +1,11 @@
-import { Injectable } from '@nestjs/common';
-import { InventoryMovement, InventoryMovementTipo, Prisma } from '@prisma/client';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { AuditAction, AuditEntidad, InventoryMovement, InventoryMovementTipo, Prisma } from '@prisma/client';
+import { RequestUser } from '../auth/strategies/jwt-access.strategy';
+import { AuditService } from '../audit/audit.service';
+import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ListMovementsQueryDto } from './dto/list-movements-query.dto';
+import { RegisterAjusteDto } from './dto/register-ajuste.dto';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
@@ -20,7 +25,11 @@ interface ApplyMovementParams {
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly insumosService: InsumosService,
+    private readonly auditService: AuditService,
+  ) {}
 
   // Núcleo compartido por HU-20 (entrada), HU-21 (ajuste) y HU-22 (consumo):
   // hace upsert de Inventory.stockActual y deja rastro en InventoryMovement
@@ -74,5 +83,63 @@ export class InventoryService {
       { ...params, tipo: InventoryMovementTipo.ENTRADA_COMPRA, delta: params.cantidad },
       client,
     );
+  }
+
+  // HU-21: ajuste manual (positivo o negativo), motivo obligatorio, no
+  // afecta ningún KPI financiero (no toca Transaction para nada) y queda
+  // registrado en AuditLog — el mismo AuditService que ya usa HU-17.
+  async registerAjusteManual(currentUser: RequestUser, dto: RegisterAjusteDto) {
+    await this.assertFarmOwned(currentUser.companyId, dto.farmId);
+    await this.insumosService.findActiveOwnedOrThrow(currentUser.companyId, dto.insumoId);
+
+    const movement = await this.applyMovement({
+      farmId: dto.farmId,
+      insumoId: dto.insumoId,
+      tipo: InventoryMovementTipo.AJUSTE_MANUAL,
+      delta: dto.cantidad,
+      motivo: dto.motivo,
+      membershipId: currentUser.membershipId,
+      userId: currentUser.userId,
+      fecha: new Date(dto.fecha),
+    });
+
+    await this.auditService.record({
+      companyId: currentUser.companyId,
+      userId: currentUser.userId,
+      action: AuditAction.CREAR,
+      entidad: AuditEntidad.INVENTARIO,
+      entidadId: movement.id,
+      valoresDespues: {
+        insumoId: dto.insumoId,
+        cantidad: dto.cantidad,
+        motivo: dto.motivo,
+        stockAntes: movement.stockAntes.toString(),
+        stockDespues: movement.stockDespues.toString(),
+      },
+    });
+
+    return movement;
+  }
+
+  // HU-21: historial de movimientos — el campo `tipo` ya distingue
+  // visualmente entradas, consumos y ajustes manuales.
+  async findMovements(companyId: string, query: ListMovementsQueryDto) {
+    return this.prisma.inventoryMovement.findMany({
+      where: {
+        farm: { companyId },
+        ...(query.farmId ? { farmId: query.farmId } : {}),
+        ...(query.insumoId ? { insumoId: query.insumoId } : {}),
+        ...(query.tipo ? { tipo: query.tipo } : {}),
+      },
+      orderBy: { fecha: 'desc' },
+      include: { insumo: { select: { name: true, unidadMedidaDefault: true } } },
+    });
+  }
+
+  private async assertFarmOwned(companyId: string, farmId: string): Promise<void> {
+    const farm = await this.prisma.farm.findFirst({ where: { id: farmId, companyId } });
+    if (!farm) {
+      throw new NotFoundException('Finca no encontrada.');
+    }
   }
 }

@@ -1,8 +1,12 @@
-import { InventoryMovementTipo } from '@prisma/client';
+import { NotFoundException } from '@nestjs/common';
+import { InventoryMovementTipo, Role } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
+import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { InventoryService } from './inventory.service';
 
-describe('InventoryService (HU-20 núcleo compartido)', () => {
+describe('InventoryService — núcleo compartido (HU-20/21/22)', () => {
   let clientMock: {
     inventory: { findUnique: jest.Mock; upsert: jest.Mock };
     inventoryMovement: { create: jest.Mock };
@@ -19,7 +23,11 @@ describe('InventoryService (HU-20 núcleo compartido)', () => {
         create: jest.fn().mockImplementation(({ data }) => Promise.resolve(data)),
       },
     };
-    inventoryService = new InventoryService({} as unknown as PrismaService);
+    inventoryService = new InventoryService(
+      {} as unknown as PrismaService,
+      {} as unknown as InsumosService,
+      {} as unknown as AuditService,
+    );
   });
 
   const baseParams = {
@@ -84,5 +92,130 @@ describe('InventoryService (HU-20 núcleo compartido)', () => {
       }),
     });
     expect(movement.stockDespues).toBe(25);
+  });
+});
+
+describe('InventoryService.registerAjusteManual (HU-21)', () => {
+  let prismaMock: {
+    farm: { findFirst: jest.Mock };
+    inventory: { findUnique: jest.Mock; upsert: jest.Mock };
+    inventoryMovement: { create: jest.Mock };
+  };
+  let insumosServiceMock: { findActiveOwnedOrThrow: jest.Mock };
+  let auditServiceMock: { record: jest.Mock };
+  let inventoryService: InventoryService;
+
+  const currentUser: RequestUser = {
+    userId: 'user-admin',
+    membershipId: 'membership-admin',
+    companyId: 'company-1',
+    role: Role.ADMIN,
+  };
+
+  const dto = {
+    farmId: 'farm-1',
+    insumoId: 'insumo-1',
+    cantidad: -5,
+    motivo: 'Merma por humedad',
+    fecha: '2026-04-15',
+  };
+
+  beforeEach(() => {
+    prismaMock = {
+      farm: { findFirst: jest.fn().mockResolvedValue({ id: 'farm-1', companyId: 'company-1' }) },
+      inventory: {
+        findUnique: jest.fn().mockResolvedValue({ stockActual: 50 }),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      inventoryMovement: {
+        create: jest.fn().mockImplementation(({ data }) =>
+          Promise.resolve({ id: 'movement-1', ...data }),
+        ),
+      },
+    };
+    insumosServiceMock = {
+      findActiveOwnedOrThrow: jest.fn().mockResolvedValue({ id: 'insumo-1' }),
+    };
+    auditServiceMock = { record: jest.fn().mockResolvedValue(undefined) };
+    inventoryService = new InventoryService(
+      prismaMock as unknown as PrismaService,
+      insumosServiceMock as unknown as InsumosService,
+      auditServiceMock as unknown as AuditService,
+    );
+  });
+
+  it('aplica el ajuste (positivo o negativo) y lo registra en AuditLog', async () => {
+    const movement = await inventoryService.registerAjusteManual(currentUser, dto);
+
+    expect(prismaMock.inventoryMovement.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        tipo: InventoryMovementTipo.AJUSTE_MANUAL,
+        cantidad: -5,
+        motivo: 'Merma por humedad',
+      }),
+    });
+    expect(movement.stockDespues).toBe(45);
+    expect(auditServiceMock.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'CREAR',
+        entidad: 'INVENTARIO',
+        entidadId: 'movement-1',
+        valoresDespues: expect.objectContaining({ motivo: 'Merma por humedad', cantidad: -5 }),
+      }),
+    );
+  });
+
+  it('acepta un ajuste positivo (sobrante de conteo físico)', async () => {
+    const movement = await inventoryService.registerAjusteManual(currentUser, {
+      ...dto,
+      cantidad: 10,
+      motivo: 'Conteo físico',
+    });
+    expect(movement.stockDespues).toBe(60);
+  });
+
+  it('rechaza con 404 si la finca no pertenece a la company', async () => {
+    prismaMock.farm.findFirst.mockResolvedValue(null);
+    await expect(inventoryService.registerAjusteManual(currentUser, dto)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(prismaMock.inventoryMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('propaga el rechazo si el insumo no pertenece a la company o está inactivo', async () => {
+    insumosServiceMock.findActiveOwnedOrThrow.mockRejectedValue(new Error('insumo inválido'));
+    await expect(inventoryService.registerAjusteManual(currentUser, dto)).rejects.toThrow();
+    expect(prismaMock.inventoryMovement.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('InventoryService.findMovements (HU-21)', () => {
+  let prismaMock: { inventoryMovement: { findMany: jest.Mock } };
+  let inventoryService: InventoryService;
+
+  beforeEach(() => {
+    prismaMock = { inventoryMovement: { findMany: jest.fn().mockResolvedValue([]) } };
+    inventoryService = new InventoryService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as InsumosService,
+      {} as unknown as AuditService,
+    );
+  });
+
+  it('filtra por company y aplica los filtros opcionales', async () => {
+    await inventoryService.findMovements('company-1', {
+      farmId: 'farm-1',
+      tipo: InventoryMovementTipo.AJUSTE_MANUAL,
+    });
+
+    expect(prismaMock.inventoryMovement.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          farm: { companyId: 'company-1' },
+          farmId: 'farm-1',
+          tipo: InventoryMovementTipo.AJUSTE_MANUAL,
+        }),
+      }),
+    );
   });
 });
