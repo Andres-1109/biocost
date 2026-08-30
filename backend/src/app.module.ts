@@ -6,6 +6,8 @@ import { envValidationSchema } from './config/env.validation';
 import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { CompaniesModule } from './companies/companies.module';
+import { CyclesModule } from './cycles/cycles.module';
+import { FarmsModule } from './farms/farms.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
 
@@ -24,6 +26,8 @@ import { UsersModule } from './users/users.module';
     PrismaModule,
     CommonModule,
     CompaniesModule,
+    FarmsModule,
+    CyclesModule,
     UsersModule,
     AuthModule,
   ],
