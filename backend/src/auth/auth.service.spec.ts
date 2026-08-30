@@ -11,6 +11,7 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SelectMembershipDto } from './dto/select-membership.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 
@@ -632,6 +633,83 @@ describe('AuthService', () => {
           UnauthorizedException,
         );
       });
+    });
+  });
+
+  describe('changePassword (HU-05)', () => {
+    let prismaMock: {
+      user: { findUniqueOrThrow: jest.Mock; update: jest.Mock };
+      refreshToken: { updateMany: jest.Mock };
+    };
+    let authService: AuthService;
+    let storedHash: string;
+
+    const dto: ChangePasswordDto = {
+      currentPassword: 'Demo1234',
+      newPassword: 'NuevaClave1',
+    };
+
+    beforeEach(async () => {
+      storedHash = await hashService.hash('Demo1234');
+      prismaMock = {
+        user: {
+          findUniqueOrThrow: jest.fn().mockResolvedValue({
+            id: 'user-1',
+            passwordHash: storedHash,
+          }),
+          update: jest.fn().mockResolvedValue({}),
+        },
+        refreshToken: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
+      };
+      authService = new AuthService(
+        prismaMock as unknown as PrismaService,
+        hashService,
+        jwtService,
+        configService,
+        emailService,
+      );
+    });
+
+    it('actualiza la contraseña cuando la actual es correcta', async () => {
+      const result = await authService.changePassword('user-1', dto, 'current-refresh');
+
+      const updateArgs = prismaMock.user.update.mock.calls[0][0];
+      expect(updateArgs.data.passwordHash).not.toBe(dto.newPassword);
+      expect(result.message).toMatch(/actualizada/);
+    });
+
+    it('rechaza el cambio si la contraseña actual es incorrecta', async () => {
+      await expect(
+        authService.changePassword(
+          'user-1',
+          { ...dto, currentPassword: 'Incorrecta1' },
+          'current-refresh',
+        ),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+    });
+
+    it('revoca todas las demás sesiones, excepto la sesión actual', async () => {
+      await authService.changePassword('user-1', dto, 'current-refresh');
+
+      expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-1',
+          revokedAt: null,
+          tokenHash: { not: expect.any(String) },
+        },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+  });
+
+  describe('ChangePasswordDto validation (HU-05)', () => {
+    it('rechaza una nueva contraseña débil (misma validación que HU-01)', async () => {
+      const invalidDto = plainToInstance(ChangePasswordDto, {
+        currentPassword: 'Demo1234',
+        newPassword: 'debil',
+      });
+      expect((await validate(invalidDto)).length).toBeGreaterThan(0);
     });
   });
 });

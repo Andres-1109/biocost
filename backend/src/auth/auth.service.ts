@@ -13,6 +13,7 @@ import { generateOpaqueToken, hashToken } from '../common/crypto/token.util';
 import { HashService } from '../common/crypto/hash.service';
 import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -391,6 +392,36 @@ export class AuthService {
 
     // Resetear la contraseña invalida todas las sesiones existentes.
     await this.revokeAllSessionsForUser(tokenRow.userId);
+
+    return { message: 'Contraseña actualizada correctamente.' };
+  }
+
+  // HU-05: cambio de contraseña autenticado. Revoca todas las demás
+  // sesiones/refresh tokens activos, excepto la sesión actual.
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+    currentRawRefreshToken?: string,
+  ) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+    });
+
+    const currentPasswordMatches = await this.hashService.verify(
+      dto.currentPassword,
+      user.passwordHash,
+    );
+    if (!currentPasswordMatches) {
+      throw new UnauthorizedException('La contraseña actual es incorrecta.');
+    }
+
+    const passwordHash = await this.hashService.hash(dto.newPassword);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+
+    await this.revokeAllSessionsForUser(userId, currentRawRefreshToken);
 
     return { message: 'Contraseña actualizada correctamente.' };
   }

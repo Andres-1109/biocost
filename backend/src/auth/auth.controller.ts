@@ -6,15 +6,20 @@ import {
   Post,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SelectMembershipDto } from './dto/select-membership.dto';
+import { RequestUser } from './strategies/jwt-access.strategy';
 
 const REFRESH_COOKIE_NAME = 'refresh_token';
 const REFRESH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -99,6 +104,24 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  changePassword(
+    @CurrentUser() currentUser: RequestUser,
+    @Body() dto: ChangePasswordDto,
+    @Req() req: Request,
+  ) {
+    const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME] as
+      | string
+      | undefined;
+    return this.authService.changePassword(
+      currentUser.userId,
+      dto,
+      rawRefreshToken,
+    );
   }
 
   private setRefreshCookie(res: Response, token: string) {
