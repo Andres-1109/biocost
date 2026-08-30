@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { InventoryMovementTipo, Role } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
@@ -185,6 +185,96 @@ describe('InventoryService.registerAjusteManual (HU-21)', () => {
   it('propaga el rechazo si el insumo no pertenece a la company o está inactivo', async () => {
     insumosServiceMock.findActiveOwnedOrThrow.mockRejectedValue(new Error('insumo inválido'));
     await expect(inventoryService.registerAjusteManual(currentUser, dto)).rejects.toThrow();
+    expect(prismaMock.inventoryMovement.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('InventoryService.registerConsumo (HU-22)', () => {
+  let prismaMock: {
+    cycle: { findFirst: jest.Mock };
+    inventory: { findUnique: jest.Mock; upsert: jest.Mock };
+    inventoryMovement: { create: jest.Mock };
+  };
+  let insumosServiceMock: { findActiveOwnedOrThrow: jest.Mock };
+  let inventoryService: InventoryService;
+
+  const currentUser: RequestUser = {
+    userId: 'user-op',
+    membershipId: 'membership-op',
+    companyId: 'company-1',
+    role: Role.OPERADOR,
+  };
+
+  const dto = {
+    insumoId: 'insumo-1',
+    cycleId: 'cycle-1',
+    cantidad: 20,
+    fecha: '2026-04-12',
+  };
+
+  beforeEach(() => {
+    prismaMock = {
+      cycle: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'cycle-1', estado: 'ACTIVO', farmId: 'farm-1' }),
+      },
+      inventory: {
+        findUnique: jest.fn().mockResolvedValue({ stockActual: 100 }),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      inventoryMovement: {
+        create: jest.fn().mockImplementation(({ data }) =>
+          Promise.resolve({ id: 'movement-1', ...data }),
+        ),
+      },
+    };
+    insumosServiceMock = {
+      findActiveOwnedOrThrow: jest.fn().mockResolvedValue({ id: 'insumo-1' }),
+    };
+    inventoryService = new InventoryService(
+      prismaMock as unknown as PrismaService,
+      insumosServiceMock as unknown as InsumosService,
+      {} as unknown as AuditService,
+    );
+  });
+
+  it('resta stock y asocia el movimiento al ciclo (sin transactionId, sin gasto nuevo)', async () => {
+    const result = await inventoryService.registerConsumo(currentUser, dto);
+
+    expect(prismaMock.inventoryMovement.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        tipo: InventoryMovementTipo.SALIDA_CONSUMO,
+        cantidad: -20,
+        cycleId: 'cycle-1',
+        transactionId: undefined,
+        farmId: 'farm-1',
+      }),
+    });
+    expect(result.movement.stockDespues).toBe(80);
+    expect(result.warning).toBeNull();
+  });
+
+  it('no bloquea si el stock queda negativo, pero avisa con warning', async () => {
+    prismaMock.inventory.findUnique.mockResolvedValue({ stockActual: 10 });
+
+    const result = await inventoryService.registerConsumo(currentUser, dto); // consume 20, quedan -10
+
+    expect(result.movement.stockDespues).toBe(-10);
+    expect(result.warning).toMatch(/negativo/);
+  });
+
+  it('rechaza si el ciclo no pertenece a la company', async () => {
+    prismaMock.cycle.findFirst.mockResolvedValue(null);
+    await expect(inventoryService.registerConsumo(currentUser, dto)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(prismaMock.inventoryMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('rechaza si el ciclo está CERRADO', async () => {
+    prismaMock.cycle.findFirst.mockResolvedValue({ id: 'cycle-1', estado: 'CERRADO', farmId: 'farm-1' });
+    await expect(inventoryService.registerConsumo(currentUser, dto)).rejects.toThrow(
+      BadRequestException,
+    );
     expect(prismaMock.inventoryMovement.create).not.toHaveBeenCalled();
   });
 });

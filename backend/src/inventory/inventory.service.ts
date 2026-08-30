@@ -1,11 +1,19 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, AuditEntidad, InventoryMovement, InventoryMovementTipo, Prisma } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  AuditAction,
+  AuditEntidad,
+  CicloEstado,
+  InventoryMovement,
+  InventoryMovementTipo,
+  Prisma,
+} from '@prisma/client';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListMovementsQueryDto } from './dto/list-movements-query.dto';
 import { RegisterAjusteDto } from './dto/register-ajuste.dto';
+import { RegisterConsumoDto } from './dto/register-consumo.dto';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
@@ -119,6 +127,44 @@ export class InventoryService {
     });
 
     return movement;
+  }
+
+  // HU-22: consumo de un insumo en un ciclo (ej. alimentar peces con stock
+  // ya comprado) — resta stock, sin generar ninguna Transaction nueva (el
+  // gasto ya se registró al comprar, HU-20). Si el stock resultante queda
+  // negativo NO se bloquea (el registro físico puede ir por delante del
+  // digital) — se avisa con `warning` en la respuesta.
+  async registerConsumo(currentUser: RequestUser, dto: RegisterConsumoDto) {
+    const cycle = await this.prisma.cycle.findFirst({
+      where: { id: dto.cycleId, farm: { companyId: currentUser.companyId } },
+    });
+    if (!cycle) {
+      throw new BadRequestException('El ciclo indicado no existe o no pertenece a tu empresa.');
+    }
+    if (cycle.estado !== CicloEstado.ACTIVO) {
+      throw new BadRequestException('Solo se puede registrar consumo sobre ciclos activos.');
+    }
+
+    await this.insumosService.findActiveOwnedOrThrow(currentUser.companyId, dto.insumoId);
+
+    const movement = await this.applyMovement({
+      farmId: cycle.farmId,
+      insumoId: dto.insumoId,
+      tipo: InventoryMovementTipo.SALIDA_CONSUMO,
+      delta: -dto.cantidad,
+      membershipId: currentUser.membershipId,
+      userId: currentUser.userId,
+      fecha: new Date(dto.fecha),
+      cycleId: dto.cycleId,
+    });
+
+    return {
+      movement,
+      warning:
+        Number(movement.stockDespues) < 0
+          ? 'El stock quedó en negativo — revisa el conteo físico.'
+          : null,
+    };
   }
 
   // HU-21: historial de movimientos — el campo `tipo` ya distingue

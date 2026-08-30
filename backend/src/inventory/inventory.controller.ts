@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ListMovementsQueryDto } from './dto/list-movements-query.dto';
 import { RegisterAjusteDto } from './dto/register-ajuste.dto';
+import { RegisterConsumoDto } from './dto/register-consumo.dto';
 import { InventoryService } from './inventory.service';
 
 @Controller('inventory')
@@ -19,6 +20,13 @@ export class InventoryController {
   @Roles(Role.ADMIN)
   registerAjuste(@CurrentUser() currentUser: RequestUser, @Body() dto: RegisterAjusteDto) {
     return this.inventoryService.registerAjusteManual(currentUser, dto);
+  }
+
+  // HU-22: Administrador u Operador registran el consumo de un insumo en
+  // un ciclo (ej. alimentar peces con stock ya comprado).
+  @Post('consumos')
+  registerConsumo(@CurrentUser() currentUser: RequestUser, @Body() dto: RegisterConsumoDto) {
+    return this.inventoryService.registerConsumo(currentUser, dto);
   }
 
   // HU-21: historial de movimientos — ADMIN-only (vista de gestión/auditoría).
