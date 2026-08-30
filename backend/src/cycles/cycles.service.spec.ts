@@ -115,6 +115,22 @@ describe('CyclesService.close (HU-12)', () => {
     ).rejects.toThrow(NotFoundException);
   });
 
+  it('calculateFinancials es público y reutilizable (HU-24 lo usa para ciclos ACTIVO)', async () => {
+    prismaMock.transaction.aggregate
+      .mockResolvedValueOnce({ _sum: { monto: 1_000_000 } })
+      .mockResolvedValueOnce({ _sum: { monto: 400_000 } });
+
+    const result = await cyclesService.calculateFinancials('cycle-1');
+
+    expect(result).toEqual({
+      totalIngresos: 1_000_000,
+      totalEgresos: 400_000,
+      utilidadNeta: 600_000,
+      margenPorcentaje: 60,
+    });
+    expect(prismaMock.cycle.update).not.toHaveBeenCalled(); // no toca el ciclo, solo calcula
+  });
+
   it('rechaza cerrar un ciclo ya CERRADO', async () => {
     prismaMock.cycle.findFirst.mockResolvedValue({ id: 'cycle-1', estado: 'CERRADO' });
     await expect(cyclesService.close(companyId, 'cycle-1', closeDto)).rejects.toThrow(

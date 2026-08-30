@@ -35,9 +35,6 @@ export class CyclesService {
   }
 
   // HU-12: cierra un ciclo ACTIVO y calcula/almacena el snapshot de KPIs.
-  // Hoy no existe el módulo de Transacciones (Épica 4) todavía, así que la
-  // agregación siempre da 0 — en cuanto exista, este mismo código empieza a
-  // reflejar datos reales sin cambios.
   async close(companyId: string, cycleId: string, dto: CloseCycleDto): Promise<Cycle> {
     const cycle = await this.findOwnedCycleOrThrow(companyId, cycleId);
 
@@ -45,6 +42,26 @@ export class CyclesService {
       throw new ConflictException('Este ciclo ya está cerrado.');
     }
 
+    const { totalIngresos, totalEgresos, utilidadNeta, margenPorcentaje } =
+      await this.calculateFinancials(cycleId);
+
+    return this.prisma.cycle.update({
+      where: { id: cycleId },
+      data: {
+        estado: CicloEstado.CERRADO,
+        harvestDate: new Date(dto.harvestDate),
+        totalIngresos,
+        totalEgresos,
+        utilidadNeta,
+        margenPorcentaje,
+      },
+    });
+  }
+
+  // HU-12/HU-24: agrega Transaction.monto por tipo para un ciclo puntual.
+  // Público y reutilizado por DashboardService (HU-24) para ciclos ACTIVO
+  // en vez de reimplementar esta agregación — close() también lo usa.
+  async calculateFinancials(cycleId: string) {
     const [ingresos, egresos] = await Promise.all([
       this.prisma.transaction.aggregate({
         where: { cycleId, tipo: TransaccionTipo.INGRESO },
@@ -61,17 +78,7 @@ export class CyclesService {
     const utilidadNeta = totalIngresos - totalEgresos;
     const margenPorcentaje = totalIngresos > 0 ? (utilidadNeta / totalIngresos) * 100 : 0;
 
-    return this.prisma.cycle.update({
-      where: { id: cycleId },
-      data: {
-        estado: CicloEstado.CERRADO,
-        harvestDate: new Date(dto.harvestDate),
-        totalIngresos,
-        totalEgresos,
-        utilidadNeta,
-        margenPorcentaje,
-      },
-    });
+    return { totalIngresos, totalEgresos, utilidadNeta, margenPorcentaje };
   }
 
   // HU-13: tabla comparativa filtrable (finca, rango de fechas de cosecha,
