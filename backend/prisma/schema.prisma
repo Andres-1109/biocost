@@ -1,0 +1,424 @@
+// Biocost — schema de base de datos (Épicas 1-8, HU-01 a HU-33)
+// Ver /docs/backlog.md para el detalle completo de cada historia de usuario.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  OPERADOR
+}
+
+enum CicloEstado {
+  ACTIVO
+  CERRADO
+}
+
+enum TransaccionTipo {
+  INGRESO
+  EGRESO
+}
+
+// Unifica categorías de ingreso y egreso (HU-14, HU-15) en un solo enum:
+// Prisma no puede condicionar el dominio de un campo según el valor de otro
+// campo de la misma fila, así que la validación de qué categorías son
+// válidas para INGRESO vs. EGRESO se hace en el backend (NestJS).
+enum TransaccionCategoria {
+  // Egresos (HU-14)
+  ALEVINOS
+  ALIMENTO_CONCENTRADO
+  INSUMOS_QUIMICOS
+  MANO_DE_OBRA
+  MANTENIMIENTO
+  SERVICIOS
+  TRANSPORTE
+  OTROS_EGRESOS
+  // Ingresos (HU-15)
+  VENTA_PESCADO
+  VENTA_SUBPRODUCTOS
+  OTROS_INGRESOS
+}
+
+// Estado de sincronización de una transacción creada offline (HU-29, HU-30).
+// Las transacciones creadas online nacen directamente en SINCRONIZADA.
+enum TransaccionEstadoSync {
+  PENDIENTE
+  SINCRONIZADA
+  RECHAZADA
+}
+
+enum InsumoCategoriaPadre {
+  ALIMENTO
+  QUIMICO
+}
+
+enum InventoryMovementTipo {
+  ENTRADA_COMPRA
+  SALIDA_CONSUMO
+  AJUSTE_MANUAL
+}
+
+enum AuditAction {
+  CREAR
+  EDITAR
+  ELIMINAR
+}
+
+enum AuditEntidad {
+  TRANSACCION
+  INVENTARIO
+}
+
+// ─────────────────────────────────────────────────────────────
+// Épica 1 — Autenticación y gestión de cuentas (HU-01 a HU-08)
+// ─────────────────────────────────────────────────────────────
+
+// Identidad única e independiente de cualquier empresa (sección 3 de CLAUDE.md).
+// Un mismo User puede tener varios Membership en distintas Company.
+model User {
+  id           String @id @default(uuid())
+  email        String @unique
+  name         String
+  // Hash bcrypt/argon2, nunca reversible (HU-01, HU-31).
+  passwordHash String
+
+  // Rate limiting anti-fuerza bruta (HU-02): 5 intentos fallidos → bloqueo 15 min.
+  failedLoginAttempts Int       @default(0)
+  lockoutUntil        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships         Membership[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  auditLogs           AuditLog[]
+  createdTransactions Transaction[]        @relation("TransactionCreatedBy")
+  updatedTransactions Transaction[]        @relation("TransactionUpdatedBy")
+  inventoryMovements  InventoryMovement[]
+
+  @@map("users")
+}
+
+// Empresa (HU-01, HU-09). Nunca se enlaza User directo a Company: siempre vía Membership.
+model Company {
+  id           String  @id @default(uuid())
+  name         String
+  // Cifrado simétrico (AES) a nivel de aplicación — aquí solo se guarda el
+  // valor ya cifrado (HU-31). No se implementa el cifrado en esta tarea.
+  nitEncrypted String?
+  address      String?
+  phone        String?
+  // URL en Cloudflare R2, nunca el binario (HU-09).
+  logoUrl      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  farms       Farm[]
+  insumos     Insumo[]
+  auditLogs   AuditLog[]
+
+  @@map("companies")
+}
+
+// Finca/unidad productiva, pertenece a una Company (HU-10).
+model Farm {
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name     String
+  location String?
+
+  // Soft delete: solo permitido si no tiene ciclos ACTIVO (regla validada en backend).
+  activo    Boolean   @default(true)
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cycles    Cycle[]
+  inventory Inventory[]
+  movements InventoryMovement[]
+
+  @@map("farms")
+}
+
+// Vínculo User ↔ Company con rol y permisos (HU-01, 06, 07, 08).
+model Membership {
+  id        String  @id @default(uuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  role Role
+
+  // Soft delete (HU-07): nunca se borra físicamente, se conserva la trazabilidad
+  // de "Registrado por: [nombre]" en transacciones históricas.
+  activo    Boolean   @default(true)
+  deletedAt DateTime?
+
+  // false por defecto para todo Membership OPERADOR (HU-08, regla de negocio sección 4).
+  puedeVerDashboard Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions       Transaction[]
+  inventoryMovements InventoryMovement[]
+
+  @@unique([userId, companyId])
+  @@map("memberships")
+}
+
+// Refresh tokens revocables (HU-03).
+model RefreshToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Hash del token, nunca el valor en texto plano.
+  tokenHash String  @unique
+  userAgent String?
+  ipAddress String?
+
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+// Token de un solo uso para recuperación de contraseña (HU-04).
+// El conteo de filas creadas por userId en los últimos 15 min implementa
+// el rate limit de "máx. 3 solicitudes por email cada 15 min" sin tabla aparte.
+model PasswordResetToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Épica 3 — Ciclos de producción (HU-11 a HU-13)
+// ─────────────────────────────────────────────────────────────
+
+model Cycle {
+  id     String @id @default(uuid())
+  farmId String
+  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Restrict)
+
+  name        String
+  seedDate    DateTime
+  harvestDate DateTime?
+
+  estado CicloEstado @default(ACTIVO)
+
+  // Snapshot calculado y almacenado al cerrar el ciclo (HU-12). Antes del
+  // cierre quedan en null; el dashboard en vivo (HU-24) calcula sobre
+  // Transaction directamente, no depende de este snapshot.
+  totalIngresos    Decimal? @db.Decimal(14, 2)
+  totalEgresos     Decimal? @db.Decimal(14, 2)
+  utilidadNeta     Decimal? @db.Decimal(14, 2)
+  margenPorcentaje Decimal? @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@map("cycles")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Épica 4 — Transacciones (HU-14 a HU-18, HU-29, HU-30)
+// ─────────────────────────────────────────────────────────────
+
+model Transaction {
+  id      String @id @default(uuid())
+  cycleId String
+  cycle   Cycle  @relation(fields: [cycleId], references: [id], onDelete: Restrict)
+
+  tipo      TransaccionTipo
+  categoria TransaccionCategoria
+
+  monto        Decimal  @db.Decimal(14, 2) // Siempre en COP (sección 4).
+  fecha        DateTime
+  cantidad     Decimal? @db.Decimal(14, 3)
+  unidadMedida String?
+  descripcion  String?
+  // URL en Cloudflare R2, nunca el binario (HU-16). Opcional.
+  facturaUrl   String?
+
+  // Solo aplica cuando categoria es ALIMENTO_CONCENTRADO o INSUMOS_QUIMICOS (HU-14, HU-19).
+  insumoId String?
+  insumo   Insumo? @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+
+  // Quién la registró — vía Membership, no User directo, para conservar
+  // rol/empresa en el momento del registro (HU-17: "Registrado por: [nombre]").
+  createdByMembershipId String
+  createdByMembership   Membership @relation(fields: [createdByMembershipId], references: [id], onDelete: Restrict)
+
+  // Último Admin que la editó (HU-17). El valor original de creación se
+  // conserva vía createdByMembership; este campo solo trackea la última edición.
+  updatedById   String?
+  updatedBy     User?   @relation("TransactionUpdatedBy", fields: [updatedById], references: [id])
+  // Redundante con updatedBy pero explícito para la relación inversa nombrada en User.
+  createdById   String?
+  createdByUser User?   @relation("TransactionCreatedBy", fields: [createdById], references: [id])
+
+  // Offline (HU-29, HU-30): UUID generado en cliente, clave de idempotencia.
+  // Null para transacciones creadas directamente online.
+  clientUuid    String?               @unique
+  estadoSync    TransaccionEstadoSync @default(SINCRONIZADA)
+  motivoRechazo String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventoryMovements InventoryMovement[]
+
+  @@index([cycleId])
+  @@index([createdByMembershipId])
+  @@map("transactions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Épica 5 — Inventario de insumos (HU-19 a HU-23)
+// ─────────────────────────────────────────────────────────────
+
+// Catálogo de insumos, compartido entre las fincas de una Company;
+// el stock en sí se lleva por Farm (Inventory / InventoryMovement).
+model Insumo {
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name                String
+  categoriaPadre      InsumoCategoriaPadre
+  unidadMedidaDefault String
+  // Umbral de alerta propio del insumo (HU-19, HU-23).
+  umbralAlertaStock   Decimal?             @db.Decimal(14, 3)
+
+  // Soft delete: conserva el historial de movimientos donde participó (HU-19).
+  activo    Boolean   @default(true)
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+  inventory    Inventory[]
+  movements    InventoryMovement[]
+
+  @@map("insumos")
+}
+
+// Stock actual cacheado por par Farm+Insumo (HU-20, 22, 23). Se recalcula de
+// forma transaccional junto con cada InventoryMovement. El "inventario total
+// de la empresa" es la suma de estas filas agrupadas por Insumo — no es una
+// tabla propia (decisión de diseño confirmada).
+model Inventory {
+  id       String @id @default(uuid())
+  farmId   String
+  farm     Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  insumoId String
+  insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+
+  stockActual Decimal @default(0) @db.Decimal(14, 3)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([farmId, insumoId])
+  @@map("inventory")
+}
+
+// Historial completo de movimientos de un insumo por finca: entrada por
+// compra, salida por consumo de ciclo, ajuste manual con motivo (HU-18, 20,
+// 21, 22). Permite reconstruir el stock en cualquier punto del tiempo.
+model InventoryMovement {
+  id       String @id @default(uuid())
+  farmId   String
+  farm     Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  insumoId String
+  insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+
+  tipo     InventoryMovementTipo
+  // Delta de stock: positivo en ENTRADA_COMPRA, negativo en SALIDA_CONSUMO,
+  // positivo o negativo en AJUSTE_MANUAL.
+  cantidad Decimal               @db.Decimal(14, 3)
+
+  stockAntes   Decimal @db.Decimal(14, 3)
+  stockDespues Decimal @db.Decimal(14, 3)
+
+  // Obligatorio solo para AJUSTE_MANUAL (HU-21); null en movimientos automáticos.
+  motivo String?
+
+  // Presente cuando el movimiento se originó automáticamente desde una
+  // Transaction (ENTRADA_COMPRA por egreso de compra, SALIDA_CONSUMO por
+  // consumo de ciclo). Null en AJUSTE_MANUAL.
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  // Quién generó el movimiento (siempre presente, incluido en ajustes manuales).
+  createdByMembershipId String
+  createdByMembership   Membership @relation(fields: [createdByMembershipId], references: [id], onDelete: Restrict)
+
+  fecha     DateTime
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+
+  @@index([farmId, insumoId])
+  @@map("inventory_movements")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Épica 8 — Seguridad y auditoría (HU-31, HU-32)
+// ─────────────────────────────────────────────────────────────
+
+// Log de auditoría de creación/edición/eliminación de transacciones y de
+// ajustes manuales de inventario (HU-17, HU-21, HU-32). valoresAntes /
+// valoresDespues guardan snapshots JSON de los campos relevantes.
+model AuditLog {
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  action    AuditAction
+  entidad   AuditEntidad
+  entidadId String
+
+  valoresAntes   Json?
+  valoresDespues Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([companyId])
+  @@index([entidad, entidadId])
+  @@map("audit_logs")
+}
