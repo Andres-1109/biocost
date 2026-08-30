@@ -11,3 +11,14 @@ export function generateOpaqueToken(): string {
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
+
+// Contraseña temporal para operadores creados por un Admin (HU-06) que ya
+// cumple la regla de fortaleza (min 8, 1 mayúscula, 1 número) sin depender
+// de que el generador aleatorio la produzca por azar.
+export function generateTemporaryPassword(): string {
+  const randomPart = randomBytes(9)
+    .toString('base64')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 10);
+  return `Bio${randomPart}1`;
+}

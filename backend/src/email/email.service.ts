@@ -41,4 +41,30 @@ export class EmailService {
       html,
     });
   }
+
+  // HU-06: notifica al operador recién creado su contraseña temporal cuando
+  // el admin no especificó una propia.
+  async sendTemporaryPasswordEmail(to: string, temporaryPassword: string): Promise<void> {
+    const subject = 'Tu cuenta en Biocost';
+    const html = `
+      <p>Se creó una cuenta de Biocost para ti.</p>
+      <p>Email: <strong>${to}</strong></p>
+      <p>Contraseña temporal: <strong>${temporaryPassword}</strong></p>
+      <p>Te recomendamos cambiarla apenas inicies sesión.</p>
+    `;
+
+    if (!this.resend) {
+      this.logger.warn(
+        `RESEND_API_KEY no configurada — password temporal para ${to}: ${temporaryPassword}`,
+      );
+      return;
+    }
+
+    await this.resend.emails.send({
+      from: this.fromEmail,
+      to,
+      subject,
+      html,
+    });
+  }
 }
