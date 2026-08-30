@@ -96,3 +96,120 @@ describe('DashboardService.getKpis (HU-24)', () => {
     expect(result.cyclesCount).toBe(0);
   });
 });
+
+describe('DashboardService.getIngresosEgresosPorMes (HU-25)', () => {
+  let prismaMock: { transaction: { findMany: jest.Mock } };
+  let dashboardService: DashboardService;
+
+  beforeEach(() => {
+    prismaMock = { transaction: { findMany: jest.fn().mockResolvedValue([]) } };
+    dashboardService = new DashboardService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as CyclesService,
+    );
+  });
+
+  it('agrupa por mes y tipo correctamente', async () => {
+    prismaMock.transaction.findMany.mockResolvedValue([
+      { tipo: 'INGRESO', monto: 1_000_000, fecha: new Date('2026-04-05') },
+      { tipo: 'EGRESO', monto: 300_000, fecha: new Date('2026-04-20') },
+      { tipo: 'INGRESO', monto: 2_000_000, fecha: new Date('2026-05-01') },
+    ]);
+
+    const result = await dashboardService.getIngresosEgresosPorMes('company-1', {});
+
+    expect(result).toEqual([
+      { mes: '2026-04', ingresos: 1_000_000, egresos: 300_000 },
+      { mes: '2026-05', ingresos: 2_000_000, egresos: 0 },
+    ]);
+  });
+
+  it('aplica el scoping por company y los filtros de ciclo/fecha', async () => {
+    await dashboardService.getIngresosEgresosPorMes('company-1', {
+      cycleId: 'cycle-1',
+      dateFrom: '2026-01-01',
+      dateTo: '2026-12-31',
+    });
+
+    expect(prismaMock.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          cycle: { farm: { companyId: 'company-1' } },
+          cycleId: 'cycle-1',
+          fecha: { gte: new Date('2026-01-01'), lte: new Date('2026-12-31') },
+        }),
+      }),
+    );
+  });
+});
+
+describe('DashboardService.getEvolucionUtilidad (HU-25)', () => {
+  let prismaMock: { cycle: { findFirst: jest.Mock }; transaction: { findMany: jest.Mock } };
+  let dashboardService: DashboardService;
+
+  beforeEach(() => {
+    prismaMock = {
+      cycle: { findFirst: jest.fn().mockResolvedValue({ id: 'cycle-1' }) },
+      transaction: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    dashboardService = new DashboardService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as CyclesService,
+    );
+  });
+
+  it('calcula la utilidad acumulada día a día, en orden cronológico', async () => {
+    prismaMock.transaction.findMany.mockResolvedValue([
+      { tipo: 'INGRESO', monto: 1_000_000, fecha: new Date('2026-04-01') },
+      { tipo: 'EGRESO', monto: 200_000, fecha: new Date('2026-04-01') },
+      { tipo: 'EGRESO', monto: 300_000, fecha: new Date('2026-04-05') },
+    ]);
+
+    const result = await dashboardService.getEvolucionUtilidad('company-1', 'cycle-1');
+
+    expect(result).toEqual([
+      { fecha: '2026-04-01', utilidadAcumulada: 800_000 }, // 1M - 200k
+      { fecha: '2026-04-05', utilidadAcumulada: 500_000 }, // 800k - 300k
+    ]);
+  });
+
+  it('rechaza con 404 si el ciclo no pertenece a la company', async () => {
+    prismaMock.cycle.findFirst.mockResolvedValue(null);
+    await expect(
+      dashboardService.getEvolucionUtilidad('company-1', 'cycle-ajeno'),
+    ).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe('DashboardService.getEgresosPorCategoria (HU-25)', () => {
+  let prismaMock: { transaction: { groupBy: jest.Mock } };
+  let dashboardService: DashboardService;
+
+  beforeEach(() => {
+    prismaMock = { transaction: { groupBy: jest.fn().mockResolvedValue([]) } };
+    dashboardService = new DashboardService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as CyclesService,
+    );
+  });
+
+  it('devuelve el monto por categoría ordenado de mayor a menor', async () => {
+    prismaMock.transaction.groupBy.mockResolvedValue([
+      { categoria: 'MANO_DE_OBRA', _sum: { monto: 500_000 } },
+      { categoria: 'ALIMENTO_CONCENTRADO', _sum: { monto: 2_000_000 } },
+    ]);
+
+    const result = await dashboardService.getEgresosPorCategoria('company-1', {});
+
+    expect(result).toEqual([
+      { categoria: 'ALIMENTO_CONCENTRADO', monto: 2_000_000 },
+      { categoria: 'MANO_DE_OBRA', monto: 500_000 },
+    ]);
+    expect(prismaMock.transaction.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ['categoria'],
+        where: expect.objectContaining({ tipo: 'EGRESO' }),
+      }),
+    );
+  });
+});

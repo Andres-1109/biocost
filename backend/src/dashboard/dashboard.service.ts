@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CicloEstado, TransaccionCategoria, TransaccionTipo } from '@prisma/client';
+import { CicloEstado, Prisma, TransaccionCategoria, TransaccionTipo } from '@prisma/client';
 import { CyclesService } from '../cycles/cycles.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChartFiltersDto } from './dto/chart-filters.dto';
 import { GetKpisQueryDto } from './dto/get-kpis-query.dto';
 
 interface Financials {
@@ -94,6 +95,94 @@ export class DashboardService {
       kgVendidos,
       cycleIds.length,
     );
+  }
+
+  // HU-25 (barras): ingresos vs egresos agrupados por mes. Prisma no
+  // soporta agrupar por fecha truncada sin SQL crudo, así que se trae el
+  // set filtrado y se agrupa en JS — mismo estilo que el resto del
+  // proyecto (ver HU-13, HU-18).
+  async getIngresosEgresosPorMes(companyId: string, filters: ChartFiltersDto) {
+    const transactions = await this.prisma.transaction.findMany({
+      where: this.buildScopedWhere(companyId, filters),
+      select: { tipo: true, monto: true, fecha: true },
+      orderBy: { fecha: 'asc' },
+    });
+
+    const byMonth = new Map<string, { ingresos: number; egresos: number }>();
+    for (const tx of transactions) {
+      const key = tx.fecha.toISOString().slice(0, 7); // YYYY-MM
+      const bucket = byMonth.get(key) ?? { ingresos: 0, egresos: 0 };
+      if (tx.tipo === TransaccionTipo.INGRESO) bucket.ingresos += Number(tx.monto);
+      else bucket.egresos += Number(tx.monto);
+      byMonth.set(key, bucket);
+    }
+
+    return Array.from(byMonth.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([mes, { ingresos, egresos }]) => ({ mes, ingresos, egresos }));
+  }
+
+  // HU-25 (línea): evolución de utilidad acumulada a lo largo de UN ciclo.
+  async getEvolucionUtilidad(companyId: string, cycleId: string) {
+    const cycle = await this.prisma.cycle.findFirst({
+      where: { id: cycleId, farm: { companyId } },
+    });
+    if (!cycle) {
+      throw new NotFoundException('Ciclo no encontrado.');
+    }
+
+    const transactions = await this.prisma.transaction.findMany({
+      where: { cycleId },
+      select: { tipo: true, monto: true, fecha: true },
+      orderBy: { fecha: 'asc' },
+    });
+
+    const byDay = new Map<string, number>();
+    for (const tx of transactions) {
+      const key = tx.fecha.toISOString().slice(0, 10); // YYYY-MM-DD
+      const signedMonto = tx.tipo === TransaccionTipo.INGRESO ? Number(tx.monto) : -Number(tx.monto);
+      byDay.set(key, (byDay.get(key) ?? 0) + signedMonto);
+    }
+
+    let acumulado = 0;
+    return Array.from(byDay.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([fecha, netoDelDia]) => {
+        acumulado += netoDelDia;
+        return { fecha, utilidadAcumulada: acumulado };
+      });
+  }
+
+  // HU-25 (torta): distribución de egresos por categoría — categoria es
+  // una columna real, así que sí se puede usar groupBy nativo de Prisma.
+  async getEgresosPorCategoria(companyId: string, filters: ChartFiltersDto) {
+    const rows = await this.prisma.transaction.groupBy({
+      by: ['categoria'],
+      where: { ...this.buildScopedWhere(companyId, filters), tipo: TransaccionTipo.EGRESO },
+      _sum: { monto: true },
+    });
+
+    return rows
+      .map((row) => ({ categoria: row.categoria, monto: Number(row._sum.monto ?? 0) }))
+      .sort((a, b) => b.monto - a.monto);
+  }
+
+  private buildScopedWhere(
+    companyId: string,
+    filters: ChartFiltersDto,
+  ): Prisma.TransactionWhereInput {
+    return {
+      cycle: { farm: { companyId } },
+      ...(filters.cycleId ? { cycleId: filters.cycleId } : {}),
+      ...(filters.dateFrom || filters.dateTo
+        ? {
+            fecha: {
+              ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}),
+              ...(filters.dateTo ? { lte: new Date(filters.dateTo) } : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   // "Costo por kg producido" (HU-24) no tiene campo persistido en el
