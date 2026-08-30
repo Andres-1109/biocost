@@ -11,11 +11,19 @@ import { JwtService } from '@nestjs/jwt';
 import { Role } from '@prisma/client';
 import { generateOpaqueToken, hashToken } from '../common/crypto/token.util';
 import { HashService } from '../common/crypto/hash.service';
+import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SelectMembershipDto } from './dto/select-membership.dto';
 import { AccessTokenPayload } from './strategies/jwt-access.strategy';
+
+const RESET_RATE_LIMIT_WINDOW_MIN = 15;
+const RESET_RATE_LIMIT_MAX_REQUESTS = 3;
+const GENERIC_FORGOT_PASSWORD_MESSAGE =
+  'Si el email está registrado, recibirás un link de recuperación.';
 
 interface SelectionTokenPayload {
   sub: string;
@@ -29,6 +37,7 @@ export class AuthService {
     private readonly hashService: HashService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   // HU-01: crea User + Company + Membership(ADMIN) de forma atómica.
@@ -308,5 +317,81 @@ export class AuthService {
       },
       data: { revokedAt: new Date() },
     });
+  }
+
+  // HU-04: solicita recuperación de contraseña. Siempre responde el mismo
+  // mensaje genérico exista o no el email (no revela existencia de cuenta).
+  // Rate limit: máx. 3 solicitudes / 15 min por usuario, contando filas de
+  // PasswordResetToken en vez de mantener una tabla de conteo aparte.
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (!user) {
+      return { message: GENERIC_FORGOT_PASSWORD_MESSAGE };
+    }
+
+    const recentRequests = await this.prisma.passwordResetToken.count({
+      where: {
+        userId: user.id,
+        createdAt: {
+          gte: new Date(Date.now() - RESET_RATE_LIMIT_WINDOW_MIN * 60_000),
+        },
+      },
+    });
+
+    if (recentRequests >= RESET_RATE_LIMIT_MAX_REQUESTS) {
+      return { message: GENERIC_FORGOT_PASSWORD_MESSAGE };
+    }
+
+    const rawToken = generateOpaqueToken();
+    const expiresMinutes =
+      this.configService.get<number>('PASSWORD_RESET_TOKEN_EXPIRES_MIN') ?? 30;
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(rawToken),
+        expiresAt: new Date(Date.now() + expiresMinutes * 60_000),
+      },
+    });
+
+    const frontendUrl = this.configService.getOrThrow<string>('FRONTEND_URL');
+    const resetLink = `${frontendUrl}/reset-password?token=${rawToken}`;
+    await this.emailService.sendPasswordResetEmail(user.email, resetLink);
+
+    return { message: GENERIC_FORGOT_PASSWORD_MESSAGE };
+  }
+
+  // HU-04: completa la recuperación con el token de un solo uso.
+  async resetPassword(dto: ResetPasswordDto) {
+    const tokenHash = hashToken(dto.token);
+    const tokenRow = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+    });
+
+    if (
+      !tokenRow ||
+      tokenRow.usedAt ||
+      tokenRow.expiresAt.getTime() < Date.now()
+    ) {
+      throw new UnauthorizedException('Token inválido o expirado.');
+    }
+
+    const passwordHash = await this.hashService.hash(dto.newPassword);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: tokenRow.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: tokenRow.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    // Resetear la contraseña invalida todas las sesiones existentes.
+    await this.revokeAllSessionsForUser(tokenRow.userId);
+
+    return { message: 'Contraseña actualizada correctamente.' };
   }
 }

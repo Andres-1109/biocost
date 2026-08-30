@@ -10,8 +10,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SelectMembershipDto } from './dto/select-membership.dto';
 
 const REFRESH_COOKIE_NAME = 'refresh_token';
@@ -85,6 +87,18 @@ export class AuthController {
       | undefined;
     await this.authService.logout(rawRefreshToken);
     res.clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' });
+  }
+
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   private setRefreshCookie(res: Response, token: string) {
