@@ -3,6 +3,8 @@ import {
   AuditAction,
   AuditEntidad,
   CicloEstado,
+  Cycle,
+  Insumo,
   Prisma,
   Role,
   Transaction,
@@ -12,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
+import { InventoryService } from '../inventory/inventory.service';
 import { CreateEgresoDto } from './dto/create-egreso.dto';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto';
@@ -30,30 +33,81 @@ export class TransactionsService {
     private readonly prisma: PrismaService,
     private readonly insumosService: InsumosService,
     private readonly auditService: AuditService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   // HU-14: registrar un egreso. Solo sobre ciclos ACTIVO de la propia
   // company. Si la categoría es Alimento concentrado o Insumos químicos,
   // exige un insumoId del catálogo consistente con esa categoría.
+  //
+  // HU-20: si además trae insumo, la compra debe traer `cantidad` (sin ella
+  // no hay forma de saber cuánto stock entra) y el mismo evento genera la
+  // Transaction Y el InventoryMovement(ENTRADA_COMPRA) de forma atómica —
+  // ambos dentro de la misma transacción de Prisma, no dos escrituras
+  // separadas que podrían quedar inconsistentes si una falla.
   async createEgreso(currentUser: RequestUser, dto: CreateEgresoDto): Promise<Transaction> {
-    await this.assertCycleOwnedAndActive(currentUser.companyId, dto.cycleId);
-    const insumoId = await this.resolveInsumoId(currentUser.companyId, dto.categoria, dto.insumoId);
+    const cycle = await this.assertCycleOwnedAndActive(currentUser.companyId, dto.cycleId);
+    const insumo = await this.resolveInsumo(currentUser.companyId, dto.categoria, dto.insumoId);
 
-    return this.prisma.transaction.create({
-      data: {
-        cycleId: dto.cycleId,
-        tipo: TransaccionTipo.EGRESO,
-        categoria: dto.categoria,
-        monto: dto.monto,
-        fecha: new Date(dto.fecha),
-        cantidad: dto.cantidad,
-        unidadMedida: dto.unidadMedida,
-        descripcion: dto.descripcion,
-        facturaUrl: dto.facturaUrl,
-        insumoId,
-        createdByMembershipId: currentUser.membershipId,
-        createdById: currentUser.userId,
-      },
+    if (insumo && dto.cantidad === undefined) {
+      throw new BadRequestException(
+        'La cantidad es obligatoria para registrar la compra en el inventario.',
+      );
+    }
+
+    const unidadMedida = dto.unidadMedida ?? insumo?.unidadMedidaDefault;
+
+    if (!insumo) {
+      return this.prisma.transaction.create({
+        data: {
+          cycleId: dto.cycleId,
+          tipo: TransaccionTipo.EGRESO,
+          categoria: dto.categoria,
+          monto: dto.monto,
+          fecha: new Date(dto.fecha),
+          cantidad: dto.cantidad,
+          unidadMedida,
+          descripcion: dto.descripcion,
+          facturaUrl: dto.facturaUrl,
+          createdByMembershipId: currentUser.membershipId,
+          createdById: currentUser.userId,
+        },
+      });
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const transaction = await tx.transaction.create({
+        data: {
+          cycleId: dto.cycleId,
+          tipo: TransaccionTipo.EGRESO,
+          categoria: dto.categoria,
+          monto: dto.monto,
+          fecha: new Date(dto.fecha),
+          cantidad: dto.cantidad,
+          unidadMedida,
+          descripcion: dto.descripcion,
+          facturaUrl: dto.facturaUrl,
+          insumoId: insumo.id,
+          createdByMembershipId: currentUser.membershipId,
+          createdById: currentUser.userId,
+        },
+      });
+
+      await this.inventoryService.registerEntradaCompra(
+        {
+          farmId: cycle.farmId,
+          insumoId: insumo.id,
+          cantidad: dto.cantidad!,
+          membershipId: currentUser.membershipId,
+          userId: currentUser.userId,
+          fecha: new Date(dto.fecha),
+          transactionId: transaction.id,
+          cycleId: dto.cycleId,
+        },
+        tx,
+      );
+
+      return transaction;
     });
   }
 
@@ -94,9 +148,9 @@ export class TransactionsService {
     const effectiveCategoria = dto.categoria ?? existing.categoria;
     this.assertCategoriaMatchesTipo(existing.tipo, effectiveCategoria);
 
-    const insumoId =
+    const insumo =
       existing.tipo === TransaccionTipo.EGRESO
-        ? await this.resolveInsumoId(
+        ? await this.resolveInsumo(
             currentUser.companyId,
             effectiveCategoria,
             dto.insumoId !== undefined ? dto.insumoId : (existing.insumoId ?? undefined),
@@ -115,7 +169,7 @@ export class TransactionsService {
         unidadMedida: dto.unidadMedida,
         descripcion: dto.descripcion,
         facturaUrl: dto.facturaUrl,
-        insumoId: existing.tipo === TransaccionTipo.EGRESO ? insumoId : undefined,
+        insumoId: existing.tipo === TransaccionTipo.EGRESO ? insumo?.id : undefined,
         updatedById: currentUser.userId,
       },
     });
@@ -206,11 +260,11 @@ export class TransactionsService {
     };
   }
 
-  private async resolveInsumoId(
+  private async resolveInsumo(
     companyId: string,
     categoria: CreateEgresoDto['categoria'],
     insumoId: string | undefined,
-  ): Promise<string | undefined> {
+  ): Promise<Insumo | undefined> {
     const expectedCategoriaPadre = CATEGORIES_REQUIRING_INSUMO[categoria];
 
     if (!expectedCategoriaPadre) {
@@ -228,17 +282,17 @@ export class TransactionsService {
       );
     }
 
-    const insumo = await this.insumosService.findOwnedOrThrow(companyId, insumoId);
+    const insumo = await this.insumosService.findActiveOwnedOrThrow(companyId, insumoId);
     if (insumo.categoriaPadre !== expectedCategoriaPadre) {
       throw new BadRequestException(
         `El insumo seleccionado no es de categoría ${expectedCategoriaPadre}.`,
       );
     }
 
-    return insumoId;
+    return insumo;
   }
 
-  private async assertCycleOwnedAndActive(companyId: string, cycleId: string): Promise<void> {
+  private async assertCycleOwnedAndActive(companyId: string, cycleId: string): Promise<Cycle> {
     const cycle = await this.prisma.cycle.findFirst({
       where: { id: cycleId, farm: { companyId } },
     });
@@ -250,6 +304,8 @@ export class TransactionsService {
     if (cycle.estado !== CicloEstado.ACTIVO) {
       throw new BadRequestException('Solo se pueden registrar transacciones sobre ciclos activos.');
     }
+
+    return cycle;
   }
 
   private assertCycleActive(estado: CicloEstado): void {

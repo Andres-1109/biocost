@@ -9,6 +9,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { CyclesModule } from './cycles/cycles.module';
 import { FarmsModule } from './farms/farms.module';
 import { InsumosModule } from './insumos/insumos.module';
+import { InventoryModule } from './inventory/inventory.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { UsersModule } from './users/users.module';
@@ -31,6 +32,7 @@ import { UsersModule } from './users/users.module';
     FarmsModule,
     CyclesModule,
     InsumosModule,
+    InventoryModule,
     TransactionsModule,
     UsersModule,
     AuthModule,
