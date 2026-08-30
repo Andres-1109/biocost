@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { HashService } from '../common/crypto/hash.service';
 import { EmailService } from '../email/email.service';
@@ -148,5 +148,76 @@ describe('UsersService.createOperator (HU-06)', () => {
       ConflictException,
     );
     expect(prismaMock.membership.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('UsersService.deactivateOperator (HU-07)', () => {
+  let prismaMock: {
+    membership: { findFirst: jest.Mock; update: jest.Mock };
+    refreshToken: { updateMany: jest.Mock };
+  };
+  let usersService: UsersService;
+
+  const adminCompanyId = 'company-1';
+
+  beforeEach(() => {
+    prismaMock = {
+      membership: {
+        findFirst: jest.fn(),
+        update: jest.fn().mockResolvedValue({
+          id: 'membership-op',
+          activo: false,
+          deletedAt: new Date(),
+        }),
+      },
+      refreshToken: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+    usersService = new UsersService(
+      prismaMock as unknown as PrismaService,
+      new HashService(),
+      buildEmailServiceMock(),
+    );
+  });
+
+  it('desactiva un membership OPERADOR y revoca sus sesiones', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue({
+      id: 'membership-op',
+      role: Role.OPERADOR,
+      companyId: adminCompanyId,
+    });
+
+    const result = await usersService.deactivateOperator(adminCompanyId, 'membership-op');
+
+    expect(prismaMock.membership.update).toHaveBeenCalledWith({
+      where: { id: 'membership-op' },
+      data: { activo: false, deletedAt: expect.any(Date) },
+    });
+    expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+      where: { membershipId: 'membership-op', revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(result.activo).toBe(false);
+  });
+
+  it('rechaza con 404 si el membership no pertenece a la company del admin — evita IDOR', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue(null);
+
+    await expect(
+      usersService.deactivateOperator(adminCompanyId, 'membership-de-otra-empresa'),
+    ).rejects.toThrow(NotFoundException);
+    expect(prismaMock.membership.update).not.toHaveBeenCalled();
+  });
+
+  it('rechaza desactivar un membership ADMIN por esta vía', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue({
+      id: 'membership-admin',
+      role: Role.ADMIN,
+      companyId: adminCompanyId,
+    });
+
+    await expect(
+      usersService.deactivateOperator(adminCompanyId, 'membership-admin'),
+    ).rejects.toThrow(BadRequestException);
+    expect(prismaMock.membership.update).not.toHaveBeenCalled();
   });
 });

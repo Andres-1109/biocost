@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, Role, User } from '@prisma/client';
 import { generateTemporaryPassword } from '../common/crypto/token.util';
 import { HashService } from '../common/crypto/hash.service';
@@ -101,6 +106,61 @@ export class UsersService {
       user: { id: user.id, email: user.email, name: user.name },
       membership: { id: membership.id, role: membership.role },
       temporaryPasswordSent: !isPasswordProvidedByAdmin,
+    };
+  }
+
+  // HU-07: lista los memberships de la empresa del admin, para que pueda
+  // gestionarlos (desactivar, HU-08 toggle de dashboard).
+  async listMemberships(companyId: string) {
+    const memberships = await this.prisma.membership.findMany({
+      where: { companyId },
+      include: { user: { select: { id: true, email: true, name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return memberships.map((m) => ({
+      id: m.id,
+      role: m.role,
+      activo: m.activo,
+      puedeVerDashboard: m.puedeVerDashboard,
+      user: m.user,
+    }));
+  }
+
+  // HU-07: soft delete de un Membership OPERADOR — nunca se borra
+  // físicamente, para conservar "Registrado por: [nombre]" en el historial
+  // de transacciones. Solo opera sobre role=OPERADOR (no permite desactivar
+  // a otro ADMIN por esta vía) y está scoped a la company del admin (404 si
+  // el membership no le pertenece, para no confirmar su existencia).
+  async deactivateOperator(adminCompanyId: string, membershipId: string) {
+    const membership = await this.prisma.membership.findFirst({
+      where: { id: membershipId, companyId: adminCompanyId },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membership no encontrado.');
+    }
+
+    if (membership.role !== Role.OPERADOR) {
+      throw new BadRequestException('Solo se pueden desactivar operadores.');
+    }
+
+    const updated = await this.prisma.membership.update({
+      where: { id: membershipId },
+      data: { activo: false, deletedAt: new Date() },
+    });
+
+    // Cierra únicamente las sesiones ligadas a ESTE membership — si el
+    // usuario tiene acceso activo a otra empresa, esas sesiones no se tocan.
+    await this.prisma.refreshToken.updateMany({
+      where: { membershipId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    return {
+      id: updated.id,
+      activo: updated.activo,
+      deletedAt: updated.deletedAt,
     };
   }
 }

@@ -1,4 +1,14 @@
-import { Body, Controller, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -33,5 +43,23 @@ export class UsersController {
     @Param('userId') userId: string,
   ) {
     return this.usersService.revokeSessions(currentUser.companyId, userId);
+  }
+
+  // HU-07: admin lista los miembros de su empresa para gestionarlos.
+  @Get()
+  @Roles(Role.ADMIN)
+  listMemberships(@CurrentUser() currentUser: RequestUser) {
+    return this.usersService.listMemberships(currentUser.companyId);
+  }
+
+  // HU-07: admin desactiva (soft delete) a un operador de su empresa.
+  @Patch(':membershipId/deactivate')
+  @Roles(Role.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  deactivateOperator(
+    @CurrentUser() currentUser: RequestUser,
+    @Param('membershipId') membershipId: string,
+  ) {
+    return this.usersService.deactivateOperator(currentUser.companyId, membershipId);
   }
 }
