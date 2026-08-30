@@ -228,7 +228,7 @@ export class TransactionsService {
       );
     }
 
-    const insumo = await this.insumosService.findOwnedOrThrow(companyId, insumoId);
+    const insumo = await this.insumosService.findActiveOwnedOrThrow(companyId, insumoId);
     if (insumo.categoriaPadre !== expectedCategoriaPadre) {
       throw new BadRequestException(
         `El insumo seleccionado no es de categoría ${expectedCategoriaPadre}.`,

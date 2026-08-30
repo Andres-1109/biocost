@@ -18,7 +18,7 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
     cycle: { findFirst: jest.Mock };
     transaction: { create: jest.Mock };
   };
-  let insumosServiceMock: { findOwnedOrThrow: jest.Mock };
+  let insumosServiceMock: { findActiveOwnedOrThrow: jest.Mock };
   let transactionsService: TransactionsService;
 
   const currentUser: RequestUser = {
@@ -44,7 +44,7 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
         create: jest.fn().mockResolvedValue({ id: 'tx-1' }),
       },
     };
-    insumosServiceMock = { findOwnedOrThrow: jest.fn() };
+    insumosServiceMock = { findActiveOwnedOrThrow: jest.fn() };
     transactionsService = new TransactionsService(
       prismaMock as unknown as PrismaService,
       insumosServiceMock as unknown as InsumosService,
@@ -64,7 +64,7 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
         createdById: currentUser.userId,
       }),
     });
-    expect(insumosServiceMock.findOwnedOrThrow).not.toHaveBeenCalled();
+    expect(insumosServiceMock.findActiveOwnedOrThrow).not.toHaveBeenCalled();
   });
 
   it('rechaza si el ciclo no pertenece a la company o no existe', async () => {
@@ -94,7 +94,7 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
   });
 
   it('acepta un insumoId válido y consistente con la categoría', async () => {
-    insumosServiceMock.findOwnedOrThrow.mockResolvedValue({
+    insumosServiceMock.findActiveOwnedOrThrow.mockResolvedValue({
       id: 'insumo-1',
       categoriaPadre: InsumoCategoriaPadre.ALIMENTO,
     });
@@ -105,14 +105,14 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
       insumoId: 'insumo-1',
     });
 
-    expect(insumosServiceMock.findOwnedOrThrow).toHaveBeenCalledWith('company-1', 'insumo-1');
+    expect(insumosServiceMock.findActiveOwnedOrThrow).toHaveBeenCalledWith('company-1', 'insumo-1');
     expect(prismaMock.transaction.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ insumoId: 'insumo-1' }),
     });
   });
 
   it('rechaza un insumo cuya categoriaPadre no coincide (ej. QUIMICO para un egreso de Alimento)', async () => {
-    insumosServiceMock.findOwnedOrThrow.mockResolvedValue({
+    insumosServiceMock.findActiveOwnedOrThrow.mockResolvedValue({
       id: 'insumo-1',
       categoriaPadre: InsumoCategoriaPadre.QUIMICO,
     });
@@ -222,7 +222,7 @@ describe('TransactionsService.update / remove (HU-17)', () => {
   let prismaMock: {
     transaction: { findFirst: jest.Mock; update: jest.Mock; delete: jest.Mock };
   };
-  let insumosServiceMock: { findOwnedOrThrow: jest.Mock };
+  let insumosServiceMock: { findActiveOwnedOrThrow: jest.Mock };
   let auditServiceMock: { record: jest.Mock };
   let transactionsService: TransactionsService;
 
@@ -255,7 +255,7 @@ describe('TransactionsService.update / remove (HU-17)', () => {
         delete: jest.fn().mockResolvedValue({}),
       },
     };
-    insumosServiceMock = { findOwnedOrThrow: jest.fn() };
+    insumosServiceMock = { findActiveOwnedOrThrow: jest.fn() };
     auditServiceMock = { record: jest.fn().mockResolvedValue(undefined) };
     transactionsService = new TransactionsService(
       prismaMock as unknown as PrismaService,
@@ -330,7 +330,7 @@ describe('TransactionsService.update / remove (HU-17)', () => {
   });
 
   it('valida el insumo si se cambia la categoría a una que lo requiere', async () => {
-    insumosServiceMock.findOwnedOrThrow.mockResolvedValue({
+    insumosServiceMock.findActiveOwnedOrThrow.mockResolvedValue({
       id: 'insumo-1',
       categoriaPadre: InsumoCategoriaPadre.ALIMENTO,
     });
@@ -340,7 +340,7 @@ describe('TransactionsService.update / remove (HU-17)', () => {
       insumoId: 'insumo-1',
     });
 
-    expect(insumosServiceMock.findOwnedOrThrow).toHaveBeenCalledWith('company-1', 'insumo-1');
+    expect(insumosServiceMock.findActiveOwnedOrThrow).toHaveBeenCalledWith('company-1', 'insumo-1');
     expect(prismaMock.transaction.update).toHaveBeenCalledWith({
       where: { id: 'tx-1' },
       data: expect.objectContaining({ insumoId: 'insumo-1' }),
