@@ -1,12 +1,17 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { InsumoCategoriaPadre, Role, TransaccionCategoria } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
 import { TransactionsService } from './transactions.service';
+
+function buildAuditServiceMock(): AuditService {
+  return { record: jest.fn().mockResolvedValue(undefined) } as unknown as AuditService;
+}
 
 describe('TransactionsService.createEgreso (HU-14)', () => {
   let prismaMock: {
@@ -43,6 +48,7 @@ describe('TransactionsService.createEgreso (HU-14)', () => {
     transactionsService = new TransactionsService(
       prismaMock as unknown as PrismaService,
       insumosServiceMock as unknown as InsumosService,
+      buildAuditServiceMock(),
     );
   });
 
@@ -160,6 +166,7 @@ describe('TransactionsService.createIngreso (HU-15)', () => {
     transactionsService = new TransactionsService(
       prismaMock as unknown as PrismaService,
       {} as unknown as InsumosService,
+      buildAuditServiceMock(),
     );
   });
 
@@ -208,5 +215,135 @@ describe('CreateIngresoDto validation (HU-15)', () => {
       categoria: TransaccionCategoria.MANO_DE_OBRA,
     });
     expect((await validate(dto)).length).toBeGreaterThan(0);
+  });
+});
+
+describe('TransactionsService.update / remove (HU-17)', () => {
+  let prismaMock: {
+    transaction: { findFirst: jest.Mock; update: jest.Mock; delete: jest.Mock };
+  };
+  let insumosServiceMock: { findOwnedOrThrow: jest.Mock };
+  let auditServiceMock: { record: jest.Mock };
+  let transactionsService: TransactionsService;
+
+  const currentUser: RequestUser = {
+    userId: 'user-admin',
+    membershipId: 'membership-admin',
+    companyId: 'company-1',
+    role: Role.ADMIN,
+  };
+
+  const existingTx = {
+    id: 'tx-1',
+    tipo: 'EGRESO',
+    categoria: TransaccionCategoria.MANO_DE_OBRA,
+    monto: { toString: () => '500000' },
+    fecha: new Date('2026-04-10'),
+    cantidad: null,
+    unidadMedida: null,
+    descripcion: 'Original',
+    facturaUrl: null,
+    insumoId: null,
+    cycle: { estado: 'ACTIVO' },
+  };
+
+  beforeEach(() => {
+    prismaMock = {
+      transaction: {
+        findFirst: jest.fn().mockResolvedValue(existingTx),
+        update: jest.fn().mockResolvedValue({ ...existingTx, descripcion: 'Corregido' }),
+        delete: jest.fn().mockResolvedValue({}),
+      },
+    };
+    insumosServiceMock = { findOwnedOrThrow: jest.fn() };
+    auditServiceMock = { record: jest.fn().mockResolvedValue(undefined) };
+    transactionsService = new TransactionsService(
+      prismaMock as unknown as PrismaService,
+      insumosServiceMock as unknown as InsumosService,
+      auditServiceMock as unknown as AuditService,
+    );
+  });
+
+  it('edita la transacción y registra la auditoría con valores antes/después', async () => {
+    await transactionsService.update(currentUser, 'tx-1', { descripcion: 'Corregido' });
+
+    expect(prismaMock.transaction.update).toHaveBeenCalledWith({
+      where: { id: 'tx-1' },
+      data: expect.objectContaining({ descripcion: 'Corregido', updatedById: 'user-admin' }),
+    });
+    expect(auditServiceMock.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'EDITAR',
+        entidad: 'TRANSACCION',
+        entidadId: 'tx-1',
+        valoresAntes: expect.objectContaining({ descripcion: 'Original' }),
+        valoresDespues: expect.objectContaining({ descripcion: 'Corregido' }),
+      }),
+    );
+  });
+
+  it('elimina la transacción y registra la auditoría', async () => {
+    await transactionsService.remove(currentUser, 'tx-1');
+
+    expect(prismaMock.transaction.delete).toHaveBeenCalledWith({ where: { id: 'tx-1' } });
+    expect(auditServiceMock.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ELIMINAR',
+        entidad: 'TRANSACCION',
+        entidadId: 'tx-1',
+        valoresAntes: expect.objectContaining({ descripcion: 'Original' }),
+      }),
+    );
+  });
+
+  it('rechaza con 404 si la transacción no pertenece a la company', async () => {
+    prismaMock.transaction.findFirst.mockResolvedValue(null);
+    await expect(
+      transactionsService.update(currentUser, 'tx-de-otra-empresa', { descripcion: 'X' }),
+    ).rejects.toThrow(NotFoundException);
+    expect(prismaMock.transaction.update).not.toHaveBeenCalled();
+  });
+
+  it('rechaza editar con 409 si el ciclo de la transacción está CERRADO', async () => {
+    prismaMock.transaction.findFirst.mockResolvedValue({ ...existingTx, cycle: { estado: 'CERRADO' } });
+    await expect(
+      transactionsService.update(currentUser, 'tx-1', { descripcion: 'X' }),
+    ).rejects.toThrow(ConflictException);
+    expect(prismaMock.transaction.update).not.toHaveBeenCalled();
+  });
+
+  it('rechaza eliminar con 409 si el ciclo de la transacción está CERRADO', async () => {
+    prismaMock.transaction.findFirst.mockResolvedValue({ ...existingTx, cycle: { estado: 'CERRADO' } });
+    await expect(transactionsService.remove(currentUser, 'tx-1')).rejects.toThrow(
+      ConflictException,
+    );
+    expect(prismaMock.transaction.delete).not.toHaveBeenCalled();
+  });
+
+  it('rechaza asignar una categoría de ingreso a una transacción de tipo EGRESO', async () => {
+    await expect(
+      transactionsService.update(currentUser, 'tx-1', {
+        categoria: TransaccionCategoria.VENTA_PESCADO,
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(prismaMock.transaction.update).not.toHaveBeenCalled();
+  });
+
+  it('valida el insumo si se cambia la categoría a una que lo requiere', async () => {
+    insumosServiceMock.findOwnedOrThrow.mockResolvedValue({
+      id: 'insumo-1',
+      categoriaPadre: InsumoCategoriaPadre.ALIMENTO,
+    });
+
+    await transactionsService.update(currentUser, 'tx-1', {
+      categoria: TransaccionCategoria.ALIMENTO_CONCENTRADO,
+      insumoId: 'insumo-1',
+    });
+
+    expect(insumosServiceMock.findOwnedOrThrow).toHaveBeenCalledWith('company-1', 'insumo-1');
+    expect(prismaMock.transaction.update).toHaveBeenCalledWith({
+      where: { id: 'tx-1' },
+      data: expect.objectContaining({ insumoId: 'insumo-1' }),
+    });
   });
 });

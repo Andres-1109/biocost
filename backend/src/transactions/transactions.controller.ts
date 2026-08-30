@@ -1,13 +1,27 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { Role } from '@prisma/client';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateEgresoDto } from './dto/create-egreso.dto';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
+import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { TransactionsService } from './transactions.service';
 
 @Controller('transactions')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
@@ -21,5 +35,23 @@ export class TransactionsController {
   @Post('ingresos')
   createIngreso(@CurrentUser() currentUser: RequestUser, @Body() dto: CreateIngresoDto) {
     return this.transactionsService.createIngreso(currentUser, dto);
+  }
+
+  // HU-17: un Operador jamás puede editar/eliminar, ni siquiera lo suyo.
+  @Patch(':id')
+  @Roles(Role.ADMIN)
+  update(
+    @CurrentUser() currentUser: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateTransactionDto,
+  ) {
+    return this.transactionsService.update(currentUser, id, dto);
+  }
+
+  @Delete(':id')
+  @Roles(Role.ADMIN)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(@CurrentUser() currentUser: RequestUser, @Param('id') id: string) {
+    return this.transactionsService.remove(currentUser, id);
   }
 }
