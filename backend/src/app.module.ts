@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { CompaniesModule } from './companies/companies.module';
 import { CyclesModule } from './cycles/cycles.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { FarmsModule } from './farms/farms.module';
 import { InsumosModule } from './insumos/insumos.module';
 import { InventoryModule } from './inventory/inventory.module';
@@ -31,6 +32,7 @@ import { UsersModule } from './users/users.module';
     CompaniesModule,
     FarmsModule,
     CyclesModule,
+    DashboardModule,
     InsumosModule,
     InventoryModule,
     TransactionsModule,
