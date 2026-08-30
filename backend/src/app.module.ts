@@ -8,6 +8,7 @@ import { CommonModule } from './common/common.module';
 import { CompaniesModule } from './companies/companies.module';
 import { CyclesModule } from './cycles/cycles.module';
 import { FarmsModule } from './farms/farms.module';
+import { InsumosModule } from './insumos/insumos.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
 
@@ -28,6 +29,7 @@ import { UsersModule } from './users/users.module';
     CompaniesModule,
     FarmsModule,
     CyclesModule,
+    InsumosModule,
     UsersModule,
     AuthModule,
   ],
