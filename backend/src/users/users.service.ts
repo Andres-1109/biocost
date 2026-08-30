@@ -10,6 +10,7 @@ import { HashService } from '../common/crypto/hash.service';
 import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOperatorDto } from './dto/create-operator.dto';
+import { UpdateDashboardAccessDto } from './dto/update-dashboard-access.dto';
 
 type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
 
@@ -162,5 +163,38 @@ export class UsersService {
       activo: updated.activo,
       deletedAt: updated.deletedAt,
     };
+  }
+
+  // HU-08: admin activa/desactiva si un operador puede ver el dashboard de
+  // rentabilidad. La barrera real contra que un OPERADOR se autoescale (o
+  // escale a otro) está en el guard del controller (@Roles(ADMIN) +
+  // RolesGuard) — este método asume que ya pasó esa verificación y solo
+  // aplica el mismo scoping por company + restricción a OPERADOR que el
+  // resto de endpoints de gestión de usuarios.
+  async setDashboardAccess(
+    adminCompanyId: string,
+    membershipId: string,
+    dto: UpdateDashboardAccessDto,
+  ) {
+    const membership = await this.prisma.membership.findFirst({
+      where: { id: membershipId, companyId: adminCompanyId },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membership no encontrado.');
+    }
+
+    if (membership.role !== Role.OPERADOR) {
+      throw new BadRequestException(
+        'El acceso al dashboard solo se configura para operadores.',
+      );
+    }
+
+    const updated = await this.prisma.membership.update({
+      where: { id: membershipId },
+      data: { puedeVerDashboard: dto.puedeVerDashboard },
+    });
+
+    return { id: updated.id, puedeVerDashboard: updated.puedeVerDashboard };
   }
 }

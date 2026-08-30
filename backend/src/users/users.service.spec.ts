@@ -221,3 +221,73 @@ describe('UsersService.deactivateOperator (HU-07)', () => {
     expect(prismaMock.membership.update).not.toHaveBeenCalled();
   });
 });
+
+describe('UsersService.setDashboardAccess (HU-08)', () => {
+  let prismaMock: {
+    membership: { findFirst: jest.Mock; update: jest.Mock };
+  };
+  let usersService: UsersService;
+
+  const adminCompanyId = 'company-1';
+
+  beforeEach(() => {
+    prismaMock = {
+      membership: {
+        findFirst: jest.fn(),
+        update: jest.fn().mockResolvedValue({
+          id: 'membership-op',
+          puedeVerDashboard: true,
+        }),
+      },
+    };
+    usersService = new UsersService(
+      prismaMock as unknown as PrismaService,
+      new HashService(),
+      buildEmailServiceMock(),
+    );
+  });
+
+  it('activa puedeVerDashboard para un OPERADOR de la company del admin', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue({
+      id: 'membership-op',
+      role: Role.OPERADOR,
+      companyId: adminCompanyId,
+    });
+
+    const result = await usersService.setDashboardAccess(adminCompanyId, 'membership-op', {
+      puedeVerDashboard: true,
+    });
+
+    expect(prismaMock.membership.update).toHaveBeenCalledWith({
+      where: { id: 'membership-op' },
+      data: { puedeVerDashboard: true },
+    });
+    expect(result.puedeVerDashboard).toBe(true);
+  });
+
+  it('rechaza con 404 si el membership no pertenece a la company del admin', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue(null);
+
+    await expect(
+      usersService.setDashboardAccess(adminCompanyId, 'membership-otra-empresa', {
+        puedeVerDashboard: true,
+      }),
+    ).rejects.toThrow(NotFoundException);
+    expect(prismaMock.membership.update).not.toHaveBeenCalled();
+  });
+
+  it('rechaza aplicar esto sobre un membership ADMIN', async () => {
+    prismaMock.membership.findFirst.mockResolvedValue({
+      id: 'membership-admin',
+      role: Role.ADMIN,
+      companyId: adminCompanyId,
+    });
+
+    await expect(
+      usersService.setDashboardAccess(adminCompanyId, 'membership-admin', {
+        puedeVerDashboard: true,
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(prismaMock.membership.update).not.toHaveBeenCalled();
+  });
+});

@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { RequestUser } from '../auth/strategies/jwt-access.strategy';
 import { CreateOperatorDto } from './dto/create-operator.dto';
+import { UpdateDashboardAccessDto } from './dto/update-dashboard-access.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -61,5 +62,25 @@ export class UsersController {
     @Param('membershipId') membershipId: string,
   ) {
     return this.usersService.deactivateOperator(currentUser.companyId, membershipId);
+  }
+
+  // HU-08: admin activa/desactiva el acceso de un operador al dashboard.
+  // @Roles(ADMIN) + RolesGuard es la única barrera que impide que un
+  // OPERADOR llame este endpoint sobre sí mismo o sobre otro — un request
+  // con role=OPERADOR nunca llega a este método (RolesGuard responde 403
+  // antes de que el controller se ejecute).
+  @Patch(':membershipId/dashboard-access')
+  @Roles(Role.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  setDashboardAccess(
+    @CurrentUser() currentUser: RequestUser,
+    @Param('membershipId') membershipId: string,
+    @Body() dto: UpdateDashboardAccessDto,
+  ) {
+    return this.usersService.setDashboardAccess(
+      currentUser.companyId,
+      membershipId,
+      dto,
+    );
   }
 }
