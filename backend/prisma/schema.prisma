@@ -180,6 +180,7 @@ model Membership {
 
   transactions       Transaction[]
   inventoryMovements InventoryMovement[]
+  refreshTokens      RefreshToken[]
 
   @@unique([userId, companyId])
   @@map("memberships")
@@ -190,6 +191,14 @@ model RefreshToken {
   id     String @id @default(uuid())
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Con qué Membership (empresa/rol) se emitió el access token asociado —
+  // sin esto, refrescar la sesión de un usuario con varias empresas (HU-02)
+  // no sabría a cuál de sus Membership re-emitir el access token. Nullable
+  // porque Membership puede eliminarse (SetNull) sin invalidar la fila
+  // para fines de auditoría de sesiones.
+  membershipId String?
+  membership   Membership? @relation(fields: [membershipId], references: [id], onDelete: SetNull)
 
   // Hash del token, nunca el valor en texto plano.
   tokenHash String  @unique
