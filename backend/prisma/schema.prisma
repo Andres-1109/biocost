@@ -256,7 +256,8 @@ model Cycle {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  transactions Transaction[]
+  transactions       Transaction[]
+  inventoryMovements InventoryMovement[]
 
   @@map("cycles")
 }
@@ -386,10 +387,20 @@ model InventoryMovement {
   motivo String?
 
   // Presente cuando el movimiento se originó automáticamente desde una
-  // Transaction (ENTRADA_COMPRA por egreso de compra, SALIDA_CONSUMO por
-  // consumo de ciclo). Null en AJUSTE_MANUAL.
+  // Transaction de compra (ENTRADA_COMPRA, HU-20). Null en SALIDA_CONSUMO
+  // (el consumo de HU-22 no genera un gasto nuevo, ya se pagó al comprar)
+  // y en AJUSTE_MANUAL.
   transactionId String?
   transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  // A qué Ciclo corresponde el movimiento — obligatorio en la práctica para
+  // ENTRADA_COMPRA (HU-20, vía el ciclo de la transacción que lo originó) y
+  // SALIDA_CONSUMO (HU-22, "consumo... asociado a un ciclo"); null en
+  // AJUSTE_MANUAL (HU-21 solo pide finca+insumo, no ciclo). SetNull en vez
+  // de Restrict porque un ciclo no debería bloquearse de cerrarse por tener
+  // movimientos de inventario históricos asociados.
+  cycleId String?
+  cycle   Cycle?  @relation(fields: [cycleId], references: [id], onDelete: SetNull)
 
   // Quién generó el movimiento (siempre presente, incluido en ajustes manuales).
   createdByMembershipId String
