@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { InsumosService } from '../insumos/insumos.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListMovementsQueryDto } from './dto/list-movements-query.dto';
+import { ListStockQueryDto } from './dto/list-stock-query.dto';
 import { RegisterAjusteDto } from './dto/register-ajuste.dto';
 import { RegisterConsumoDto } from './dto/register-consumo.dto';
 
@@ -180,6 +181,45 @@ export class InventoryService {
       orderBy: { fecha: 'desc' },
       include: { insumo: { select: { name: true, unidadMedidaDefault: true } } },
     });
+  }
+
+  // HU-23: stock actual por Farm+Insumo, con bajoUmbral calculado. El
+  // "inventario total de la empresa" (sección 3/CLAUDE.md) es la suma de
+  // estas filas agrupadas por insumo si se quiere consolidar — no es una
+  // tabla propia, así que no hace falta un endpoint aparte para eso.
+  async findStock(companyId: string, query: ListStockQueryDto) {
+    const rows = await this.prisma.inventory.findMany({
+      where: {
+        farm: { companyId },
+        ...(query.farmId ? { farmId: query.farmId } : {}),
+      },
+      include: {
+        insumo: { select: { id: true, name: true, unidadMedidaDefault: true, umbralAlertaStock: true } },
+        farm: { select: { id: true, name: true } },
+      },
+      orderBy: { insumo: { name: 'asc' } },
+    });
+
+    return rows.map((row) => {
+      const umbral = row.insumo.umbralAlertaStock;
+      const bajoUmbral = umbral != null && Number(row.stockActual) < Number(umbral);
+      return {
+        farmId: row.farm.id,
+        farmName: row.farm.name,
+        insumoId: row.insumo.id,
+        insumoName: row.insumo.name,
+        unidadMedida: row.insumo.unidadMedidaDefault,
+        stockActual: row.stockActual,
+        umbralAlertaStock: umbral,
+        bajoUmbral,
+      };
+    });
+  }
+
+  // HU-23: mismo listado, solo los que están por debajo de su umbral.
+  async findAlerts(companyId: string, query: ListStockQueryDto) {
+    const stock = await this.findStock(companyId, query);
+    return stock.filter((row) => row.bajoUmbral);
   }
 
   private async assertFarmOwned(companyId: string, farmId: string): Promise<void> {

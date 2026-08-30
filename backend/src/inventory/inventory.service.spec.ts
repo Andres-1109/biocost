@@ -309,3 +309,59 @@ describe('InventoryService.findMovements (HU-21)', () => {
     );
   });
 });
+
+describe('InventoryService.findStock / findAlerts (HU-23)', () => {
+  let prismaMock: { inventory: { findMany: jest.Mock } };
+  let inventoryService: InventoryService;
+
+  const rowBajoUmbral = {
+    stockActual: 30,
+    farm: { id: 'farm-1', name: 'Estanque 1' },
+    insumo: { id: 'insumo-1', name: 'Alimento flotante', unidadMedidaDefault: 'kg', umbralAlertaStock: 50 },
+  };
+  const rowSobreUmbral = {
+    stockActual: 200,
+    farm: { id: 'farm-1', name: 'Estanque 1' },
+    insumo: { id: 'insumo-2', name: 'Sulfato de cobre', unidadMedidaDefault: 'kg', umbralAlertaStock: 10 },
+  };
+  const rowSinUmbral = {
+    stockActual: 5,
+    farm: { id: 'farm-1', name: 'Estanque 1' },
+    insumo: { id: 'insumo-3', name: 'Alevinos', unidadMedidaDefault: 'unidad', umbralAlertaStock: null },
+  };
+
+  beforeEach(() => {
+    prismaMock = {
+      inventory: {
+        findMany: jest.fn().mockResolvedValue([rowBajoUmbral, rowSobreUmbral, rowSinUmbral]),
+      },
+    };
+    inventoryService = new InventoryService(
+      prismaMock as unknown as PrismaService,
+      {} as unknown as InsumosService,
+      {} as unknown as AuditService,
+    );
+  });
+
+  it('findStock marca bajoUmbral correctamente por fila', async () => {
+    const result = await inventoryService.findStock('company-1', {});
+
+    expect(result.find((r) => r.insumoId === 'insumo-1')?.bajoUmbral).toBe(true);
+    expect(result.find((r) => r.insumoId === 'insumo-2')?.bajoUmbral).toBe(false);
+    expect(result.find((r) => r.insumoId === 'insumo-3')?.bajoUmbral).toBe(false); // sin umbral configurado
+  });
+
+  it('findAlerts solo devuelve las filas bajoUmbral:true', async () => {
+    const alerts = await inventoryService.findAlerts('company-1', {});
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].insumoId).toBe('insumo-1');
+  });
+
+  it('findStock filtra por company', async () => {
+    await inventoryService.findStock('company-1', {});
+    expect(prismaMock.inventory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ farm: { companyId: 'company-1' } }) }),
+    );
+  });
+});

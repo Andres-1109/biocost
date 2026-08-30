@@ -6,6 +6,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ListMovementsQueryDto } from './dto/list-movements-query.dto';
+import { ListStockQueryDto } from './dto/list-stock-query.dto';
 import { RegisterAjusteDto } from './dto/register-ajuste.dto';
 import { RegisterConsumoDto } from './dto/register-consumo.dto';
 import { InventoryService } from './inventory.service';
@@ -37,5 +38,17 @@ export class InventoryController {
     @Query() query: ListMovementsQueryDto,
   ) {
     return this.inventoryService.findMovements(currentUser.companyId, query);
+  }
+
+  // HU-23 / HU-08: sin @Roles() — un Operador sin permiso de dashboard
+  // igual debe poder ver el inventario disponible para su trabajo diario.
+  @Get('stock')
+  findStock(@CurrentUser() currentUser: RequestUser, @Query() query: ListStockQueryDto) {
+    return this.inventoryService.findStock(currentUser.companyId, query);
+  }
+
+  @Get('alerts')
+  findAlerts(@CurrentUser() currentUser: RequestUser, @Query() query: ListStockQueryDto) {
+    return this.inventoryService.findAlerts(currentUser.companyId, query);
   }
 }
