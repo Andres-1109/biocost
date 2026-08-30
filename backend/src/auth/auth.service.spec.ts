@@ -368,4 +368,130 @@ describe('AuthService', () => {
       );
     });
   });
+
+  describe('refresh / logout (HU-03)', () => {
+    let prismaMock: {
+      refreshToken: {
+        findUnique: jest.Mock;
+        update: jest.Mock;
+        updateMany: jest.Mock;
+        create: jest.Mock;
+      };
+    };
+    let authService: AuthService;
+
+    const activeMembership = {
+      id: 'membership-1',
+      role: Role.ADMIN,
+      activo: true,
+      companyId: 'company-1',
+      company: { id: 'company-1', name: 'La Bendición' },
+    };
+    const user = { id: 'user-1', email: 'admin@labendicion.com', name: 'Admin Demo' };
+
+    const validTokenRow = {
+      id: 'refresh-1',
+      userId: 'user-1',
+      revokedAt: null as Date | null,
+      expiresAt: new Date(Date.now() + 60_000),
+      user,
+      membership: activeMembership,
+    };
+
+    beforeEach(() => {
+      prismaMock = {
+        refreshToken: {
+          findUnique: jest.fn().mockResolvedValue({ ...validTokenRow }),
+          update: jest.fn().mockResolvedValue({}),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          create: jest.fn().mockResolvedValue({}),
+        },
+      };
+      authService = new AuthService(
+        prismaMock as unknown as PrismaService,
+        hashService,
+        jwtService,
+        configService,
+      );
+    });
+
+    it('rota el refresh token: revoca el usado y emite uno nuevo', async () => {
+      const result = await authService.refresh('raw-refresh-token');
+
+      expect(prismaMock.refreshToken.update).toHaveBeenCalledWith({
+        where: { id: 'refresh-1' },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(result.accessToken).toBe('signed.jwt.token');
+      expect(result.refreshToken).toHaveLength(64);
+    });
+
+    it('rechaza si no se envía cookie de refresh', async () => {
+      await expect(authService.refresh(undefined)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rechaza si el token no existe en DB', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue(null);
+      await expect(authService.refresh('token-desconocido')).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rechaza si el token está expirado', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue({
+        ...validTokenRow,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+      await expect(authService.refresh('raw-refresh-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rechaza si el membership asociado ya no está activo', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue({
+        ...validTokenRow,
+        membership: { ...activeMembership, activo: false },
+      });
+      await expect(authService.refresh('raw-refresh-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('reuse detection: un token ya revocado revoca TODAS las sesiones del usuario', async () => {
+      prismaMock.refreshToken.findUnique.mockResolvedValue({
+        ...validTokenRow,
+        revokedAt: new Date(),
+      });
+
+      await expect(authService.refresh('raw-refresh-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+
+    it('logout revoca solo el refresh token actual', async () => {
+      await authService.logout('raw-refresh-token');
+      expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { tokenHash: expect.any(String), revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+
+    it('revokeAllSessionsForUser excluye la sesión actual cuando se indica', async () => {
+      await authService.revokeAllSessionsForUser('user-1', 'raw-refresh-token');
+      expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'user-1',
+          revokedAt: null,
+          tokenHash: { not: expect.any(String) },
+        },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+  });
 });

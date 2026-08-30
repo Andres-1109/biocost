@@ -229,6 +229,7 @@ export class AuthService {
     await this.prisma.refreshToken.create({
       data: {
         userId: user.id,
+        membershipId: membership.id,
         tokenHash: hashToken(refreshTokenRaw),
         expiresAt: new Date(Date.now() + refreshExpiresInDays * 24 * 60 * 60_000),
       },
@@ -241,5 +242,71 @@ export class AuthService {
       company: { id: membership.company.id, name: membership.company.name },
       membership: { id: membership.id, role: membership.role },
     };
+  }
+
+  // HU-03: renueva el access token a partir de un refresh token válido.
+  // Rotación: cada refresh revoca la fila usada y crea una nueva. Si el
+  // tokenHash presentado ya está revocado, se trata como señal de robo
+  // (reuse detection) y se cierran TODAS las sesiones del usuario.
+  async refresh(rawRefreshToken: string | undefined) {
+    if (!rawRefreshToken) {
+      throw new UnauthorizedException('Sesión no encontrada.');
+    }
+
+    const tokenHash = hashToken(rawRefreshToken);
+    const tokenRow = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      include: { user: true, membership: { include: { company: true } } },
+    });
+
+    if (!tokenRow) {
+      throw new UnauthorizedException('Sesión inválida.');
+    }
+
+    if (tokenRow.revokedAt) {
+      await this.revokeAllSessionsForUser(tokenRow.userId);
+      throw new UnauthorizedException(
+        'Sesión inválida. Por seguridad se cerraron todas tus sesiones activas.',
+      );
+    }
+
+    if (tokenRow.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException('Sesión expirada.');
+    }
+
+    if (!tokenRow.membership || !tokenRow.membership.activo) {
+      throw new UnauthorizedException('Tu acceso a esta empresa ya no está activo.');
+    }
+
+    await this.prisma.refreshToken.update({
+      where: { id: tokenRow.id },
+      data: { revokedAt: new Date() },
+    });
+
+    return this.issueSession(tokenRow.user, tokenRow.membership);
+  }
+
+  // HU-03: cierre de sesión explícito — revoca solo el refresh token actual.
+  async logout(rawRefreshToken: string | undefined) {
+    if (!rawRefreshToken) return;
+    const tokenHash = hashToken(rawRefreshToken);
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  // HU-03/HU-05: revoca todos los refresh tokens activos de un usuario,
+  // excepto opcionalmente el de la sesión actual (HU-05: cambio de password).
+  async revokeAllSessionsForUser(userId: string, exceptRawToken?: string) {
+    const exceptHash = exceptRawToken ? hashToken(exceptRawToken) : undefined;
+    await this.prisma.refreshToken.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+        ...(exceptHash ? { tokenHash: { not: exceptHash } } : {}),
+      },
+      data: { revokedAt: new Date() },
+    });
   }
 }
