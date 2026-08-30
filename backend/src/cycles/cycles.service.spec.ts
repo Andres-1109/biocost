@@ -123,3 +123,83 @@ describe('CyclesService.close (HU-12)', () => {
     expect(prismaMock.cycle.update).not.toHaveBeenCalled();
   });
 });
+
+describe('CyclesService.findAll (HU-13)', () => {
+  let prismaMock: { cycle: { findMany: jest.Mock } };
+  let cyclesService: CyclesService;
+
+  const companyId = 'company-1';
+
+  const cycleA = {
+    id: 'cycle-a',
+    name: 'Ciclo A',
+    estado: 'CERRADO',
+    seedDate: new Date('2026-01-01'),
+    harvestDate: new Date('2026-04-01'), // 90 días
+    utilidadNeta: 1_000_000,
+    margenPorcentaje: 20,
+    farm: { id: 'farm-1', name: 'Estanque 1' },
+  };
+
+  beforeEach(() => {
+    prismaMock = { cycle: { findMany: jest.fn().mockResolvedValue([cycleA]) } };
+    cyclesService = new CyclesService(prismaMock as unknown as PrismaService);
+  });
+
+  it('filtra por defecto solo ciclos CERRADO de la company', async () => {
+    await cyclesService.findAll(companyId, {});
+
+    expect(prismaMock.cycle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ farm: { companyId }, estado: 'CERRADO' }),
+      }),
+    );
+  });
+
+  it('aplica el filtro de finca cuando se especifica', async () => {
+    await cyclesService.findAll(companyId, { farmId: 'farm-1' } as any);
+
+    const callArgs = prismaMock.cycle.findMany.mock.calls[0][0];
+    expect(callArgs.where.farmId).toBe('farm-1');
+  });
+
+  it('aplica el filtro de rango de fechas de cosecha', async () => {
+    await cyclesService.findAll(companyId, {
+      dateFrom: '2026-01-01',
+      dateTo: '2026-12-31',
+    } as any);
+
+    const callArgs = prismaMock.cycle.findMany.mock.calls[0][0];
+    expect(callArgs.where.harvestDate).toEqual({
+      gte: new Date('2026-01-01'),
+      lte: new Date('2026-12-31'),
+    });
+  });
+
+  it('ordena por la columna y dirección solicitadas', async () => {
+    await cyclesService.findAll(companyId, {
+      sortBy: 'utilidadNeta',
+      order: 'asc',
+    } as any);
+
+    const callArgs = prismaMock.cycle.findMany.mock.calls[0][0];
+    expect(callArgs.orderBy).toEqual({ utilidadNeta: 'asc' });
+  });
+
+  it('calcula durationDays y aplana los datos de finca en la respuesta', async () => {
+    const [result] = await cyclesService.findAll(companyId, {});
+
+    expect(result).toEqual({
+      id: 'cycle-a',
+      name: 'Ciclo A',
+      farmId: 'farm-1',
+      farmName: 'Estanque 1',
+      estado: 'CERRADO',
+      seedDate: cycleA.seedDate,
+      harvestDate: cycleA.harvestDate,
+      durationDays: 90,
+      utilidadNeta: 1_000_000,
+      margenPorcentaje: 20,
+    });
+  });
+});

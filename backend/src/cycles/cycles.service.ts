@@ -3,6 +3,7 @@ import { CicloEstado, Cycle, TransaccionTipo } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloseCycleDto } from './dto/close-cycle.dto';
 import { CreateCycleDto } from './dto/create-cycle.dto';
+import { ListCyclesQueryDto } from './dto/list-cycles-query.dto';
 
 @Injectable()
 export class CyclesService {
@@ -71,6 +72,45 @@ export class CyclesService {
         margenPorcentaje,
       },
     });
+  }
+
+  // HU-13: tabla comparativa filtrable (finca, rango de fechas de cosecha,
+  // estado) y ordenable por cualquier columna soportada.
+  async findAll(companyId: string, query: ListCyclesQueryDto) {
+    const cycles = await this.prisma.cycle.findMany({
+      where: {
+        farm: { companyId },
+        ...(query.farmId ? { farmId: query.farmId } : {}),
+        estado: query.estado ?? CicloEstado.CERRADO,
+        ...(query.dateFrom || query.dateTo
+          ? {
+              harvestDate: {
+                ...(query.dateFrom ? { gte: new Date(query.dateFrom) } : {}),
+                ...(query.dateTo ? { lte: new Date(query.dateTo) } : {}),
+              },
+            }
+          : {}),
+      },
+      include: { farm: { select: { id: true, name: true } } },
+      orderBy: { [query.sortBy ?? 'harvestDate']: query.order ?? 'desc' },
+    });
+
+    return cycles.map((cycle) => ({
+      id: cycle.id,
+      name: cycle.name,
+      farmId: cycle.farm.id,
+      farmName: cycle.farm.name,
+      estado: cycle.estado,
+      seedDate: cycle.seedDate,
+      harvestDate: cycle.harvestDate,
+      durationDays: cycle.harvestDate
+        ? Math.round(
+            (cycle.harvestDate.getTime() - cycle.seedDate.getTime()) / (1000 * 60 * 60 * 24),
+          )
+        : null,
+      utilidadNeta: cycle.utilidadNeta,
+      margenPorcentaje: cycle.margenPorcentaje,
+    }));
   }
 
   private async findOwnedCycleOrThrow(companyId: string, cycleId: string): Promise<Cycle> {
